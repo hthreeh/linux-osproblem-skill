@@ -1,0 +1,4 @@
+interface:
+  display_name: "OS Troubleshooter"
+  short_description: "Diagnose Linux OS faults, vmcore, coredump, and performance"
+  default_prompt: "Use $os-troubleshooter to diagnose this Linux issue and produce a concise root cause summary with next steps."

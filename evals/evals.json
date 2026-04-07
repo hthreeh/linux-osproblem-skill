@@ -1,0 +1,161 @@
+{
+  "skill_name": "os-troubleshooter",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "系统出现内核panic，我在/var/crash/目录下找到了vmcore文件，请帮我分析崩溃原因。系统内核版本是5.10.0，vmlinux文件在/usr/lib/debug/lib/modules/5.10.0/vmlinux位置。",
+      "expected_output": "分析vmcore文件，使用crash工具，给出崩溃原因、调用栈和根因分析",
+      "files": [],
+      "assertions": [
+        {
+          "name": "使用crash工具分析",
+          "description": "应该使用crash工具加载vmcore进行分析"
+        },
+        {
+          "name": "给出崩溃原因",
+          "description": "应该明确指出panic的原因（如NULL指针、OOM等）"
+        },
+        {
+          "name": "提供调用栈分析",
+          "description": "应该分析bt输出，找出崩溃函数"
+        },
+        {
+          "name": "提出修复建议",
+          "description": "应该给出解决方案或规避方案"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "我的程序运行时出现段错误，coredump文件在/var/core/myapp.12345.core，程序路径是/opt/myapp/bin/myapp，请帮我分析崩溃原因。",
+      "expected_output": "使用gdb分析coredump，定位段错误原因，给出代码分析和修复建议",
+      "files": [],
+      "assertions": [
+        {
+          "name": "使用gdb加载coredump",
+          "description": "应该使用gdb命令加载可执行文件和coredump"
+        },
+        {
+          "name": "分析调用栈",
+          "description": "应该使用bt命令分析调用栈"
+        },
+        {
+          "name": "识别段错误类型",
+          "description": "应该识别是NULL指针、数组越界、Use-After-Free等具体类型"
+        },
+        {
+          "name": "给出代码修复建议",
+          "description": "应该给出具体的代码修复建议"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "系统最近运行变慢，CPU使用率很高，我执行了top命令看到某些进程占用大量CPU。请帮我分析性能瓶颈在哪里，如何优化。",
+      "expected_output": "使用USE方法和红灯信号法分析性能问题，识别瓶颈，给出优化建议",
+      "files": [],
+      "assertions": [
+        {
+          "name": "应用USE方法",
+          "description": "应该应用USE方法分析CPU、内存、IO、网络资源"
+        },
+        {
+          "name": "使用性能工具",
+          "description": "应该建议使用perf、sar、iostat等工具"
+        },
+        {
+          "name": "识别瓶颈",
+          "description": "应该明确指出性能瓶颈所在"
+        },
+        {
+          "name": "给出优化建议",
+          "description": "应该给出具体的优化措施"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "系统出现soft lockup告警：BUG: soft lockup - CPU#0 stuck for 23s! 我怀疑是死锁问题，请帮我分析如何定位。",
+      "expected_output": "分析soft lockup原因，使用死锁分析方法，给出定位步骤",
+      "files": [],
+      "assertions": [
+        {
+          "name": "识别soft lockup",
+          "description": "应该识别这是soft lockup问题"
+        },
+        {
+          "name": "分析死锁类型",
+          "description": "应该分析可能的死锁类型（自旋锁、互斥锁等）"
+        },
+        {
+          "name": "给出分析步骤",
+          "description": "应该给出vmcore分析的详细步骤"
+        },
+        {
+          "name": "提出修复方案",
+          "description": "应该给出死锁修复的建议"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "系统没有自己panic，是我在机器卡死时通过 sysrq-c 手动触发了 crash，保留了一个 vmcore。请帮我分析真正导致 Web 服务无响应的原因。",
+      "expected_output": "识别这是人工触发快照场景，忽略sysrq触发栈，聚焦无响应根因并给出后续分析路径",
+      "files": [],
+      "assertions": [
+        {
+          "name": "识别人工触发场景",
+          "description": "应该区分人工触发快照与系统自身崩溃"
+        },
+        {
+          "name": "忽略触发机制噪声",
+          "description": "不应把sysrq-c本身误判为根因"
+        },
+        {
+          "name": "聚焦真实症状",
+          "description": "应该围绕Web服务无响应、hung task、锁等待或资源问题展开分析"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "我提供了一个 panic 现场目录，里面有 crash、vmlinux、vmcore 和 src 内核源码。请帮我找出根因，并定位到具体源码文件和函数。",
+      "expected_output": "基于crash现场与源码联动分析，给出具体文件、函数、错误路径和证据链",
+      "files": [],
+      "assertions": [
+        {
+          "name": "进行源码联动验证",
+          "description": "应该在有src目录时结合源码验证crash证据"
+        },
+        {
+          "name": "根因足够具体",
+          "description": "根因应具体到文件、函数、路径分支或行号，而不是笼统描述"
+        },
+        {
+          "name": "保留证据链",
+          "description": "应该明确列出支撑根因的crash命令、输出或源码对应关系"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "prompt": "请基于 vmcore 现场给我一份完整的 Linux 内核崩溃 RCA 报告，需要包含症状、直接原因、机理、潜在原因、根本原因和验证建议。",
+      "expected_output": "生成结构化的vmcore RCA报告，包含分层根因分析、证据链和验证计划",
+      "files": [],
+      "assertions": [
+        {
+          "name": "输出结构化RCA",
+          "description": "应该输出分章节的 RCA 报告，而不是零散结论"
+        },
+        {
+          "name": "包含五层因果链",
+          "description": "应覆盖症状、直接原因、机理、潜在原因、根本原因"
+        },
+        {
+          "name": "包含验证计划",
+          "description": "报告中应给出后续验证和修复确认步骤"
+        }
+      ]
+    }
+  ]
+}

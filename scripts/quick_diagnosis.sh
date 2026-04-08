@@ -47,10 +47,63 @@ safe_run() {
 safe_cat() {
     local src="$1" dst="$2" lines="${3:-$MAX_LOG_LINES}"
     if [ -r "$src" ]; then
-        tail -n "$lines" "$src" > "$dst" 2>/dev/null || echo "[无法读取] $src" > "$dst"
+        smart_extract "$src" "$dst" "$lines" || echo "[无法读取] $src" > "$dst"
     else
         echo "[不存在或无权限] $src" > "$dst"
     fi
+}
+
+# 智能日志提取：优先保留错误上下文，而非简单尾部截断
+smart_extract() {
+    local src="$1" dst="$2" max_lines="${3:-2000}"
+
+    # 前置检查：文件不存在或不可读时直接返回失败
+    if [ ! -r "$src" ]; then
+        return 1
+    fi
+
+    local total_lines
+    total_lines=$(wc -l < "$src" 2>/dev/null || echo 0)
+
+    # 文件行数不超过限制，直接完整输出
+    if [ "$total_lines" -le "$max_lines" ] 2>/dev/null; then
+        if cat "$src" > "$dst" 2>/dev/null; then
+            return 0
+        fi
+        return 1
+    fi
+
+    # 判断是否为日志类文件
+    local is_log=0
+    if head -5 "$src" 2>/dev/null | grep -qE '^[A-Z][a-z]{2} [ 0-9]{2} [0-9]{2}:' 2>/dev/null || \
+       head -5 "$src" 2>/dev/null | grep -qE '^\[[ 0-9]+\.[0-9]+\]' 2>/dev/null || \
+       head -5 "$src" 2>/dev/null | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}' 2>/dev/null; then
+        is_log=1
+    fi
+
+    if [ "$is_log" -eq 1 ]; then
+        # 日志文件：提取错误上下文 + 尾部基线
+        local context_lines=$((max_lines * 2 / 3))
+        local tail_lines=$((max_lines - context_lines))
+
+        {
+            echo "=== 智能提取: 错误上下文 (最多 ${context_lines} 行) ==="
+            grep -iE -B 3 -A 10 'panic|BUG:|Oops:|error:|segfault|critical|fatal|unable to handle|general protection|call trace|kernel bug|warning.*failed|timeout|refused|reset|corrupt' "$src" 2>/dev/null \
+                | head -n "$context_lines" || echo "[无匹配的错误行]"
+
+            echo ""
+            echo "=== 智能提取: 日志尾部基线 (后 ${tail_lines} 行) ==="
+            tail -n "$tail_lines" "$src" 2>/dev/null
+        } > "$dst"
+    else
+        # 非日志文件：取尾部
+        if tail -n "$max_lines" "$src" > "$dst" 2>/dev/null; then
+            return 0
+        fi
+        return 1
+    fi
+
+    return 0
 }
 
 check_root() {
@@ -94,19 +147,38 @@ detect_userspace_crash() {
 }
 
 detect_performance() {
-    # 负载 > CPU核数*2 或 内存可用<10%
-    local cpus load_int
+    # 综合判断：负载 + 内存 + IO 等待 + 上下文切换
+    local cpus load_int load_threshold
     cpus=$(nproc 2>/dev/null || echo 1)
     load_int=$(awk '{printf "%d", $1}' /proc/loadavg 2>/dev/null || echo 0)
-    if [ "$load_int" -ge $((cpus * 2)) ]; then
+
+    # 负载阈值：CPU 核数的 1.5 倍（而非 2 倍），更敏感
+    load_threshold=$((cpus * 3 / 2))
+    if [ "$load_int" -ge "$load_threshold" ]; then
         return 0
     fi
+
+    # 内存可用 < 15%（而非 10%），更早发现问题
     local mem_total mem_avail
     mem_total=$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo 1)
     mem_avail=$(awk '/MemAvailable/ {print $2}' /proc/meminfo 2>/dev/null || echo 1)
-    if [ "$mem_total" -gt 0 ] && [ $((mem_avail * 100 / mem_total)) -lt 10 ]; then
+    if [ "$mem_total" -gt 0 ] && [ $((mem_avail * 100 / mem_total)) -lt 15 ]; then
         return 0
     fi
+
+    # IO 等待过高：iowait > 20%
+    if [ -r /proc/stat ]; then
+        local cpu_line user nice system idle iowait
+        cpu_line=$(head -1 /proc/stat 2>/dev/null || echo "")
+        if [ -n "$cpu_line" ]; then
+            read -r _ user nice system idle iowait _ <<< "$cpu_line"
+            local total=$((user + nice + system + idle + iowait))
+            if [ "$total" -gt 0 ] && [ $((iowait * 100 / total)) -gt 20 ]; then
+                return 0
+            fi
+        fi
+    fi
+
     return 1
 }
 
@@ -445,16 +517,16 @@ main() {
     # 基础信息（始终收集）
     collect_base
 
-    # 问题检测
+    # 问题检测（按严重程度排序：崩溃 > OOM > 挂起 > 性能 > 其他）
     log_step "检测问题类型..."
     local detectors=(
-        "detect_kernel_crash:内核崩溃(panic/BUG/oops):collect_kernel_crash"
-        "detect_oom:内存耗尽(OOM):collect_oom"
-        "detect_hang:系统挂起(D-state/lockup):collect_hang"
-        "detect_performance:性能异常(高负载/内存不足):collect_performance"
-        "detect_userspace_crash:用户态崩溃(coredump/segfault):collect_userspace_crash"
-        "detect_network:网络异常(错误/链路断开):collect_network"
-        "detect_storage:存储异常(IO错误/空间不足):collect_storage"
+        "detect_kernel_crash:内核崩溃(panic/BUG/oops) [P1]:collect_kernel_crash"
+        "detect_oom:内存耗尽(OOM) [P1]:collect_oom"
+        "detect_userspace_crash:用户态崩溃(coredump/segfault) [P1]:collect_userspace_crash"
+        "detect_hang:系统挂起(D-state/lockup) [P1]:collect_hang"
+        "detect_performance:性能异常(高负载/内存不足) [P2]:collect_performance"
+        "detect_network:网络异常(错误/链路断开) [P2]:collect_network"
+        "detect_storage:存储异常(IO错误/空间不足) [P2]:collect_storage"
     )
 
     for entry in "${detectors[@]}"; do

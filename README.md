@@ -24,12 +24,12 @@
 
 - `scripts/diagnose.sh`: 总入口，支持 `auto/kernel/userspace/perf/hang/network/storage`
 - `scripts/collect_info.sh`: 收集基础系统信息
-- `scripts/quick_diagnosis.sh`: 快速自动分类
+- `scripts/quick_diagnosis.sh`: 快速自动分类（按 P1/P2 严重度排序检测）
 - `scripts/vmcore/check_environment.sh`: 检查 `crash / vmlinux / vmcore` 环境
 - `scripts/vmcore/crash_config.sh`: 保存和测试 `crash` 分析配置
 - `scripts/vmcore/quick_report.sh`: 生成初步 crash 报告
-- `scripts/vmcore/evidence_chain.sh`: 生成证据链
-- `scripts/vmcore/rca_wizard.sh`: 交互式 RCA 向导
+- `scripts/vmcore/evidence_chain.sh`: 生成证据链（支持 `--batch` 批处理模式）
+- `scripts/vmcore/rca_wizard.sh`: 交互式 RCA 向导（支持 `--batch` 批处理模式）
 - `scripts/vmcore/analyze_struct.py`: 解析 crash 导出的结构体信息
 
 `scripts/` 根目录中的部分脚本是 wrapper，会转发到 `scripts/vmcore/`。当前实现已经兼容“从 Windows 拷到 Linux 后脚本没有执行位”的常见场景。
@@ -120,5 +120,4 @@ crash> bt
 如果你准备继续维护，建议下一步补：
 
 - `README` 中的更多样例输入/输出
-- 一份 `.gitignore`
-- 基于真实样本的回归测试数据
+- 基于真实样本的回归测试数据（`evals/` 目录）

@@ -1,0 +1,37 @@
+# 诊断输出目录
+diagnose-*/
+diagnosis-*/
+os-info-*/
+*.tar.gz
+
+# 用户工件（vmcore/coredump 等，通常很大且敏感）
+*.vmcore
+vmcore
+*.core
+core
+*.crash
+*.elf
+
+# 运行时生成的报告
+${HOME}/evidence_chains/
+${HOME}/rca_reports/
+${HOME}/.crash_analyzer.conf
+
+# 测试产生的临时文件
+decoded_vmcore_dmesg_*.json
+decoded_vmcore_dmesg_*.log
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 日志
+*.log

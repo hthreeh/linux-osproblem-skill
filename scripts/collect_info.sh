@@ -71,12 +71,13 @@ check_dir_size() {
 # - timeout 防止挂起
 # - head -c 限制输出大小
 # - 捕获错误不中断脚本
+# - 使用 "$@" 直接执行，避免 sh -c 注入风险
 safe_run() {
     local desc="$1"
     local outfile="$2"
     shift 2
     local cmd_name
-    cmd_name=$(echo "$1" | awk '{print $1}')
+    cmd_name="$1"
 
     # 如果是读文件 (cat) 则不检查目标文件命令
     if [ "$cmd_name" != "cat" ] && [ "$cmd_name" != "tail" ] && [ "$cmd_name" != "head" ]; then
@@ -94,7 +95,8 @@ safe_run() {
         return 0
     fi
 
-    if timeout "$CMD_TIMEOUT" sh -c "$*" 2>/dev/null | head -c "$OUTPUT_LIMIT" > "$OUTPUT_DIR/$outfile" 2>/dev/null; then
+    # 直接使用 "$@" 执行，不经过 sh -c，避免命令注入
+    if timeout "$CMD_TIMEOUT" "${cmd_name}" "${@:2}" 2>/dev/null | head -c "$OUTPUT_LIMIT" > "$OUTPUT_DIR/$outfile" 2>/dev/null; then
         return 0
     else
         local rc=$?
@@ -117,56 +119,57 @@ fi
 echo ""
 
 echo "[1/10] 系统基本信息..."
-safe_run "uname -a"         "uname.txt"        "uname -a"
-safe_run "os-release"        "os-release.txt"   "cat /etc/os-release"
-safe_run "hostname"          "hostname.txt"     "hostname"
-safe_run "uptime"            "uptime.txt"       "uptime"
+safe_run "uname -a"         "uname.txt"        uname -a
+safe_run "os-release"        "os-release.txt"   cat /etc/os-release
+safe_run "hostname"          "hostname.txt"     hostname
+safe_run "uptime"            "uptime.txt"       uptime
 
 echo "[2/10] 内核信息..."
-safe_run "kernel version"    "kernel-version.txt" "cat /proc/version"
-safe_run "lsmod"             "modules.txt"       "lsmod"
-safe_run "cmdline"           "cmdline.txt"       "cat /proc/cmdline"
+safe_run "kernel version"    "kernel-version.txt" cat /proc/version
+safe_run "lsmod"             "modules.txt"       lsmod
+safe_run "cmdline"           "cmdline.txt"       cat /proc/cmdline
 
 echo "[3/10] CPU信息..."
-safe_run "lscpu"             "cpu-info.txt"      "lscpu"
-safe_run "cpuinfo"           "cpuinfo.txt"       "cat /proc/cpuinfo"
+safe_run "lscpu"             "cpu-info.txt"      lscpu
+safe_run "cpuinfo"           "cpuinfo.txt"       cat /proc/cpuinfo
 
 echo "[4/10] 内存信息..."
-safe_run "free -h"           "memory-info.txt"   "free -h"
-safe_run "meminfo"           "meminfo.txt"       "cat /proc/meminfo"
-safe_run "vmstat"            "vmstat.txt"        "cat /proc/vmstat"
+safe_run "free -h"           "memory-info.txt"   free -h
+safe_run "meminfo"           "meminfo.txt"       cat /proc/meminfo
+safe_run "vmstat"            "vmstat.txt"        cat /proc/vmstat
 
 echo "[5/10] 磁盘信息..."
-safe_run "df -h"             "disk-usage.txt"    "df -h"
-safe_run "mount"             "mounts.txt"        "mount"
-safe_run "partitions"        "partitions.txt"    "cat /proc/partitions"
-safe_run "mdstat"            "mdstat.txt"        "cat /proc/mdstat"
+safe_run "df -h"             "disk-usage.txt"    df -h
+safe_run "mount"             "mounts.txt"        mount
+safe_run "partitions"        "partitions.txt"    cat /proc/partitions
+safe_run "mdstat"            "mdstat.txt"        cat /proc/mdstat
 
 echo "[6/10] 网络信息..."
-safe_run "ip addr"           "network-interfaces.txt" "ip addr"
-safe_run "ip route"          "routes.txt"        "ip route"
-safe_run "resolv.conf"       "resolv.conf.txt"   "cat /etc/resolv.conf"
-safe_run "ss -tuln"          "listening-ports.txt" "ss -tuln"
+safe_run "ip addr"           "network-interfaces.txt" ip addr
+safe_run "ip route"          "routes.txt"        ip route
+safe_run "resolv.conf"       "resolv.conf.txt"   cat /etc/resolv.conf
+safe_run "ss -tuln"          "listening-ports.txt" ss -tuln
 
 echo "[7/10] 进程信息..."
-safe_run "ps auxf"           "processes.txt"     "ps auxf"
-safe_run "top -b -n 1"       "top.txt"           "top -b -n 1"
+safe_run "ps auxf"           "processes.txt"     ps auxf
+safe_run "top -b -n 1"       "top.txt"           top -b -n 1
 
 echo "[8/10] 内核日志..."
-safe_run "dmesg"             "dmesg.txt"         "dmesg"
-safe_run "journalctl -k"     "kernel-journal.txt" "journalctl -k --no-pager"
+safe_run "dmesg"             "dmesg.txt"         dmesg
+safe_run "journalctl -k"     "kernel-journal.txt" journalctl -k --no-pager
 
 echo "[9/10] 系统日志..."
 if [ -f /var/log/messages ]; then
-    safe_run "messages log"  "messages.txt"      "tail -1000 /var/log/messages"
+    safe_run "messages log"  "messages.txt"      tail -1000 /var/log/messages
 fi
 if [ -f /var/log/syslog ]; then
-    safe_run "syslog"        "syslog.txt"        "tail -1000 /var/log/syslog"
+    safe_run "syslog"        "syslog.txt"        tail -1000 /var/log/syslog
 fi
 
 echo "[10/10] 系统配置..."
-safe_run "sysctl -a"         "sysctl.txt"        "sysctl -a"
-safe_run "ulimit -a"         "limits.txt"        "ulimit -a"
+safe_run "sysctl -a"         "sysctl.txt"        sysctl -a
+# ulimit 是 shell 内置命令，不能直接用 timeout 执行
+{ ulimit -a; } > "$OUTPUT_DIR/limits.txt" 2>/dev/null || echo "[无法获取 ulimit]" > "$OUTPUT_DIR/limits.txt"
 
 echo ""
 echo "========================================"

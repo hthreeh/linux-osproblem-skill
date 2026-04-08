@@ -108,10 +108,68 @@ safe_run() {
 safe_cat() {
     local src="$1" dst="$2" lines="${3:-$MAX_LOG_LINES}"
     if [ -r "$src" ]; then
-        tail -n "$lines" "$src" > "$dst" 2>/dev/null && COLLECTED_FILES=$((COLLECTED_FILES + 1)) || echo "[无法读取] $src" > "$dst"
+        smart_extract "$src" "$dst" "$lines" && COLLECTED_FILES=$((COLLECTED_FILES + 1)) || echo "[无法读取] $src" > "$dst"
     else
         echo "[不存在或无权限] $src" > "$dst"
     fi
+}
+
+# 智能日志提取：优先保留错误上下文，而非简单尾部截断
+# 策略：
+#   1. 对日志类文件：提取错误/异常上下文 + 尾部基线
+#   2. 对配置文件：完整输出（通常不大）
+#   3. 对 proc 虚拟文件：按指定行数限制
+smart_extract() {
+    local src="$1" dst="$2" max_lines="${3:-2000}"
+
+    # 前置检查：文件不存在或不可读时直接返回失败
+    if [ ! -r "$src" ]; then
+        return 1
+    fi
+
+    local total_lines
+    total_lines=$(wc -l < "$src" 2>/dev/null || echo 0)
+
+    # 文件行数不超过限制，直接完整输出
+    if [ "$total_lines" -le "$max_lines" ] 2>/dev/null; then
+        if cat "$src" > "$dst" 2>/dev/null; then
+            return 0
+        fi
+        return 1
+    fi
+
+    # 判断是否为日志类文件（包含时间戳或内核日志特征）
+    local is_log=0
+    if head -5 "$src" 2>/dev/null | grep -qE '^[A-Z][a-z]{2} [ 0-9]{2} [0-9]{2}:' 2>/dev/null || \
+       head -5 "$src" 2>/dev/null | grep -qE '^\[[ 0-9]+\.[0-9]+\]' 2>/dev/null || \
+       head -5 "$src" 2>/dev/null | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}' 2>/dev/null; then
+        is_log=1
+    fi
+
+    if [ "$is_log" -eq 1 ]; then
+        # 日志文件：提取错误上下文 + 尾部基线
+        local context_lines=$((max_lines * 2 / 3))
+        local tail_lines=$((max_lines - context_lines))
+
+        {
+            echo "=== 智能提取: 错误上下文 (最多 ${context_lines} 行) ==="
+            # 提取包含 panic/BUG/Oops/error 等关键词的行及其上下文（不加 -n 保持格式一致）
+            grep -iE -B 3 -A 10 'panic|BUG:|Oops:|error:|segfault|critical|fatal|unable to handle|general protection|call trace|kernel bug|warning.*failed|timeout|refused|reset|corrupt' "$src" 2>/dev/null \
+                | head -n "$context_lines" || echo "[无匹配的错误行]"
+
+            echo ""
+            echo "=== 智能提取: 日志尾部基线 (后 ${tail_lines} 行) ==="
+            tail -n "$tail_lines" "$src" 2>/dev/null
+        } > "$dst"
+    else
+        # 非日志文件（如配置文件、proc 输出）：取尾部
+        if tail -n "$max_lines" "$src" > "$dst" 2>/dev/null; then
+            return 0
+        fi
+        return 1
+    fi
+
+    return 0
 }
 
 # =====================================================================

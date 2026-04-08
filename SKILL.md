@@ -200,8 +200,8 @@ crash> foreach bt
 
 可使用：
 
-- `scripts/vmcore/evidence_chain.sh`
-- `scripts/vmcore/rca_wizard.sh`
+- `scripts/vmcore/evidence_chain.sh`（交互模式，也支持 `--batch <input_file>` 批处理）
+- `scripts/vmcore/rca_wizard.sh`（交互模式，也支持 `--batch <input_file>` 批处理）
 - `scripts/vmcore/quick_report.sh`
 - `scripts/vmcore/crash_wrapper.sh`
 - `scripts/vmcore/analyze_struct.py`

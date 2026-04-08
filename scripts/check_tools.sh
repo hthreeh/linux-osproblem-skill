@@ -102,11 +102,11 @@ check_command "perf" "perf" "Linux性能分析"
 check_command "sar" "sysstat" "系统活动报告"
 check_command "iostat" "sysstat" "IO统计"
 check_command "mpstat" "sysstat" "多处理器统计"
-check_command "vmstat" "procps-ng" "虚拟内存统计"
+check_command "vmstat" "procps" "虚拟内存统计"
 check_command "pidstat" "sysstat" "进程统计"
 
 if [ "$QUIET" -eq 0 ]; then echo ""; echo "--- 网络分析工具 ---"; fi
-check_command "ss" "iproute" "socket统计"
+check_command "ss" "iproute2" "socket统计"
 check_command "netstat" "net-tools" "网络统计"
 check_command "tcpdump" "tcpdump" "网络包捕获"
 check_command "iperf3" "iperf3" "网络带宽测试"

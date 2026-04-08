@@ -1,5 +1,22 @@
 #!/bin/bash
 # rca_wizard.sh - Interactive Root Cause Analysis Wizard
+# 用法:
+#   交互模式: rca_wizard.sh
+#   批处理模式: rca_wizard.sh --batch <input_file>
+#   输入文件格式: KEY=VALUE，每行一个
+#     SYMPTOM=...
+#     WHEN_OCCURRED=...
+#     FREQUENCY=...
+#     WORKLOAD=...
+#     PANIC_MSG=...
+#     CRASH_FUNC=...
+#     CRASH_ADDR=...
+#     WHY1=... WHY2=... WHY3=... WHY4=... WHY5=...
+#     EVIDENCE1=... EVIDENCE2=... EVIDENCE3=... EVIDENCE4=...
+#     ALT1=... ALT1_DISPROOF=...
+#     ALT2=... ALT2_DISPROOF=...
+#     ROOT_CAUSE=... MECHANISM=... SYSTEMIC_ISSUE=... SCOPE=...
+#     IMMEDIATE_FIX=... SYSTEMIC_FIX1=... SYSTEMIC_FIX2=... VERIFICATION=...
 
 set -e
 
@@ -22,6 +39,178 @@ clear_screen() {
     fi
 }
 
+# =====================================================================
+# 批处理模式
+# =====================================================================
+run_batch() {
+    local input_file="$1"
+
+    if [ ! -f "$input_file" ]; then
+        echo "错误: 输入文件不存在: $input_file" >&2
+        exit 1
+    fi
+
+    # 读取所有 KEY=VALUE
+    while IFS='=' read -r key value || [ -n "$key" ]; do
+        # 清理 Windows 回车符
+        key="${key//$'\r'/}"
+        value="${value//$'\r'/}"
+        # 跳过空行和注释
+        [ -z "$key" ] && continue
+        [[ "$key" =~ ^[[:space:]]*# ]] && continue
+        # 去除首尾空白
+        key=$(echo "$key" | xargs)
+        [ -z "$key" ] && continue
+        value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        # 设置变量
+        export "$key=$value"
+    done < "$input_file"
+
+    # 写入报告
+    write_rca_report
+
+    echo "批处理模式完成，报告: $RCA_FILE"
+    exit 0
+}
+
+write_rca_report() {
+    # 报告头
+    {
+        printf '%s\n' "================================================================================"
+        printf '%s\n' "ROOT CAUSE ANALYSIS REPORT"
+        printf '%s\n' "================================================================================"
+        printf 'Date: %s\n' "$(date)"
+        printf 'Analyst: %s (batch mode)\n' "$(whoami)"
+        printf 'System: %s\n' "$(hostname)"
+        printf '\n'
+    } > "$RCA_FILE"
+
+    # SECTION 1
+    write_section "SECTION 1: BASIC INFORMATION"
+    {
+        printf 'What is the observable symptom?\n-> %s\n\n' "${SYMPTOM:-N/A}"
+        printf 'When did this occur?\n-> %s\n\n' "${WHEN_OCCURRED:-N/A}"
+        printf 'How often does this occur?\n-> %s\n\n' "${FREQUENCY:-N/A}"
+        printf 'What was the system doing at the time?\n-> %s\n\n' "${WORKLOAD:-N/A}"
+    } >> "$RCA_FILE"
+
+    # SECTION 2
+    write_section "SECTION 2: INITIAL FINDINGS"
+    {
+        printf 'What panic / error message do you see?\n-> %s\n\n' "${PANIC_MSG:-N/A}"
+        printf 'Which function appears at the crash site?\n-> %s\n\n' "${CRASH_FUNC:-N/A}"
+        printf 'What address or object looks suspicious?\n-> %s\n\n' "${CRASH_ADDR:-N/A}"
+    } >> "$RCA_FILE"
+
+    # SECTION 3: 5 Whys
+    write_section "SECTION 3: THE 5 WHYS"
+    {
+        printf '1. Why did the crash occur?\n-> %s\n\n' "${WHY1:-N/A}"
+        printf '2. Why did that condition exist?\n-> %s\n\n' "${WHY2:-N/A}"
+        printf '3. Why was that possible?\n-> %s\n\n' "${WHY3:-N/A}"
+        printf '4. Why was it not prevented earlier?\n-> %s\n\n' "${WHY4:-N/A}"
+        printf '5. What systemic issue made this possible?\n-> %s\n\n' "${WHY5:-N/A}"
+    } >> "$RCA_FILE"
+
+    # SECTION 4
+    write_section "SECTION 4: SUPPORTING EVIDENCE"
+    {
+        printf 'Evidence #1\n-> %s\n\n' "${EVIDENCE1:-N/A}"
+        printf 'Evidence #2\n-> %s\n\n' "${EVIDENCE2:-N/A}"
+        printf 'Evidence #3\n-> %s\n\n' "${EVIDENCE3:-N/A}"
+        printf 'Evidence #4 (optional)\n-> %s\n\n' "${EVIDENCE4:-N/A}"
+    } >> "$RCA_FILE"
+
+    # SECTION 5
+    write_section "SECTION 5: ALTERNATIVE HYPOTHESES"
+    {
+        printf 'Alternative hypothesis #1\n-> %s\n' "${ALT1:-N/A}"
+        printf 'Why is hypothesis #1 disproven?\n-> %s\n\n' "${ALT1_DISPROOF:-N/A}"
+        printf 'Alternative hypothesis #2\n-> %s\n' "${ALT2:-N/A}"
+        printf 'Why is hypothesis #2 disproven?\n-> %s\n\n' "${ALT2_DISPROOF:-N/A}"
+    } >> "$RCA_FILE"
+
+    # SECTION 6
+    write_section "SECTION 6: VALIDATION CHECKLIST"
+    {
+        printf 'Validation: PASSED (batch mode, auto-passed)\n\n'
+    } >> "$RCA_FILE"
+
+    # SECTION 7
+    write_section "SECTION 7: ROOT CAUSE STATEMENT"
+    {
+        printf 'Root cause\n-> %s\n\n' "${ROOT_CAUSE:-N/A}"
+        printf 'Mechanism\n-> %s\n\n' "${MECHANISM:-N/A}"
+        printf 'Systemic issue\n-> %s\n\n' "${SYSTEMIC_ISSUE:-N/A}"
+        printf 'Scope\n-> %s\n\n' "${SCOPE:-N/A}"
+    } >> "$RCA_FILE"
+
+    # SECTION 8
+    write_section "SECTION 8: RECOMMENDED ACTIONS"
+    {
+        printf 'Immediate fix\n-> %s\n\n' "${IMMEDIATE_FIX:-N/A}"
+        printf 'Systemic fix #1\n-> %s\n\n' "${SYSTEMIC_FIX1:-N/A}"
+        printf 'Systemic fix #2\n-> %s\n\n' "${SYSTEMIC_FIX2:-N/A}"
+        printf 'How will you verify the fix?\n-> %s\n\n' "${VERIFICATION:-N/A}"
+    } >> "$RCA_FILE"
+
+    # Executive Summary
+    {
+        printf '%s\n' "================================================================================"
+        printf '%s\n' "EXECUTIVE SUMMARY"
+        printf '%s\n' "================================================================================"
+        printf 'Symptom: %s\n' "${SYMPTOM:-N/A}"
+        printf 'Root cause: %s\n' "${ROOT_CAUSE:-N/A}"
+        printf 'Mechanism: %s\n' "${MECHANISM:-N/A}"
+        printf 'Scope: %s\n' "${SCOPE:-N/A}"
+        printf '\nRecommended actions:\n'
+        printf '  Immediate: %s\n' "${IMMEDIATE_FIX:-N/A}"
+        printf '  Systemic:  %s\n' "${SYSTEMIC_FIX1:-N/A}"
+        printf '             %s\n' "${SYSTEMIC_FIX2:-N/A}"
+        printf 'Verification: %s\n' "${VERIFICATION:-N/A}"
+        printf '%s\n' "================================================================================"
+    } >> "$RCA_FILE"
+}
+
+write_section() {
+    local title="$1"
+    printf '\n%s\n' "$title" >> "$RCA_FILE"
+    printf '%s\n' "================================================================================" >> "$RCA_FILE"
+    printf '\n' >> "$RCA_FILE"
+}
+
+# 解析命令行参数
+BATCH_MODE=0
+BATCH_INPUT=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --batch|-b)
+            BATCH_MODE=1
+            BATCH_INPUT="$2"
+            shift 2
+            ;;
+        --help|-h)
+            echo "用法: $0 [--batch <input_file>]"
+            echo "  无参数: 交互模式"
+            echo "  --batch <file>: 批处理模式，从文件读取 KEY=VALUE 输入"
+            exit 0
+            ;;
+        *)
+            echo "未知参数: $1" >&2
+            exit 1
+            ;;
+    esac
+done
+
+if [ "$BATCH_MODE" -eq 1 ]; then
+    run_batch "$BATCH_INPUT"
+fi
+
+# =====================================================================
+# 交互模式（原有逻辑）
+# =====================================================================
+
 prompt() {
     local question="$1"
     local var_name="$2"
@@ -31,9 +220,10 @@ prompt() {
     read -r -p "> " response
     printf -v "$var_name" '%s' "$response"
 
-    echo "$question" >> "$RCA_FILE"
-    echo "-> $response" >> "$RCA_FILE"
-    echo "" >> "$RCA_FILE"
+    # 使用 printf 安全写入，避免变量展开导致命令注入
+    printf '%s\n' "$question" >> "$RCA_FILE"
+    printf '-> %s\n' "$response" >> "$RCA_FILE"
+    printf '\n' >> "$RCA_FILE"
 }
 
 validate() {
@@ -42,7 +232,7 @@ validate() {
 
     echo -e "${YELLOW}${question}${NC}"
     read -r -p "[Y/N] > " answer
-    echo "$question -> $answer" >> "$RCA_FILE"
+    printf '%s -> %s\n' "$question" "$answer" >> "$RCA_FILE"
 
     if [[ "$answer" =~ ^[Yy] ]]; then
         return 0
@@ -58,9 +248,9 @@ begin_section() {
     echo -e "${BLUE}================================================================================${NC}"
     echo ""
 
-    echo "$title" >> "$RCA_FILE"
-    echo "================================================================================" >> "$RCA_FILE"
-    echo "" >> "$RCA_FILE"
+    printf '%s\n' "$title" >> "$RCA_FILE"
+    printf '%s\n' "================================================================================" >> "$RCA_FILE"
+    printf '\n' >> "$RCA_FILE"
 }
 
 clear_screen
@@ -77,15 +267,17 @@ EOF
 echo ""
 read -r -p "Press Enter to continue..."
 
-cat > "$RCA_FILE" <<EOF
+cat > "$RCA_FILE" <<'HEADER'
 ================================================================================
 ROOT CAUSE ANALYSIS REPORT
 ================================================================================
-Date: $(date)
-Analyst: $(whoami)
-System: $(hostname)
-
-EOF
+HEADER
+{
+    printf 'Date: %s\n' "$(date)"
+    printf 'Analyst: %s\n' "$(whoami)"
+    printf 'System: %s\n' "$(hostname)"
+    printf '\n'
+} >> "$RCA_FILE"
 
 begin_section "SECTION 1: BASIC INFORMATION"
 prompt "What is the observable symptom?" SYMPTOM
@@ -129,16 +321,16 @@ if ! validate "Is the proposed root cause specific enough to guide a fix?"; then
 if ! validate "Would the fix prevent this class of failures?"; then ((++FAIL_COUNT)); fi
 if ! validate "Could another engineer reproduce the same conclusion from the evidence?"; then ((++FAIL_COUNT)); fi
 
-echo "" >> "$RCA_FILE"
+printf '\n' >> "$RCA_FILE"
 if [ "$FAIL_COUNT" -eq 0 ]; then
     echo -e "${GREEN}All validation checks passed.${NC}"
-    echo "Validation: PASSED" >> "$RCA_FILE"
+    printf '%s\n' "Validation: PASSED" >> "$RCA_FILE"
 else
     echo -e "${YELLOW}$FAIL_COUNT validation check(s) failed. More analysis may be needed.${NC}"
-    echo "Validation: NEEDS MORE WORK ($FAIL_COUNT failures)" >> "$RCA_FILE"
+    printf 'Validation: NEEDS MORE WORK (%d failures)\n' "$FAIL_COUNT" >> "$RCA_FILE"
 fi
 
-echo "" >> "$RCA_FILE"
+printf '\n' >> "$RCA_FILE"
 
 begin_section "SECTION 7: ROOT CAUSE STATEMENT"
 prompt "Root cause" ROOT_CAUSE
@@ -152,22 +344,23 @@ prompt "Systemic fix #1" SYSTEMIC_FIX1
 prompt "Systemic fix #2" SYSTEMIC_FIX2
 prompt "How will you verify the fix?" VERIFICATION
 
-cat >> "$RCA_FILE" <<EOF
-================================================================================
-EXECUTIVE SUMMARY
-================================================================================
-Symptom: $SYMPTOM
-Root cause: $ROOT_CAUSE
-Mechanism: $MECHANISM
-Scope: $SCOPE
-
-Recommended actions:
-  Immediate: $IMMEDIATE_FIX
-  Systemic:  $SYSTEMIC_FIX1
-             $SYSTEMIC_FIX2
-Verification: $VERIFICATION
-================================================================================
-EOF
+# 使用 printf 安全写入执行摘要
+{
+    printf '%s\n' "================================================================================"
+    printf '%s\n' "EXECUTIVE SUMMARY"
+    printf '%s\n' "================================================================================"
+    printf 'Symptom: %s\n' "$SYMPTOM"
+    printf 'Root cause: %s\n' "$ROOT_CAUSE"
+    printf 'Mechanism: %s\n' "$MECHANISM"
+    printf 'Scope: %s\n' "$SCOPE"
+    printf '\n'
+    printf 'Recommended actions:\n'
+    printf '  Immediate: %s\n' "$IMMEDIATE_FIX"
+    printf '  Systemic:  %s\n' "$SYSTEMIC_FIX1"
+    printf '             %s\n' "$SYSTEMIC_FIX2"
+    printf 'Verification: %s\n' "$VERIFICATION"
+    printf '%s\n' "================================================================================"
+} >> "$RCA_FILE"
 
 echo ""
 echo -e "${GREEN}Root cause analysis complete.${NC}"

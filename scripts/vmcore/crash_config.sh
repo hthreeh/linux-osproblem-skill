@@ -96,21 +96,21 @@ test_config() {
 
     if ! command -v "$CRASH_CMD" &> /dev/null; then
         echo -e "${RED}✗ crash command not found: $CRASH_CMD${NC}"
-        ((errors++))
+        errors=$((errors + 1))
     else
         echo -e "${GREEN}✓ crash command found: $CRASH_CMD${NC}"
     fi
 
     if [[ ! -f "$VMLINUX_PATH" ]]; then
         echo -e "${RED}✗ vmlinux not found: $VMLINUX_PATH${NC}"
-        ((errors++))
+        errors=$((errors + 1))
     else
         echo -e "${GREEN}✓ vmlinux found: $VMLINUX_PATH${NC}"
     fi
 
     if [[ ! -f "$VMCORE_PATH" ]]; then
         echo -e "${RED}✗ vmcore not found: $VMCORE_PATH${NC}"
-        ((errors++))
+        errors=$((errors + 1))
     else
         echo -e "${GREEN}✓ vmcore found: $VMCORE_PATH${NC}"
     fi

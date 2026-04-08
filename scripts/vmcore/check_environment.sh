@@ -84,11 +84,10 @@ fi
 echo "OK"
 
 # 3. Dry run / Compatibility check
+# 使用更通用的验证方式：crash --minimal 不是所有版本都支持
+# 改用 sys 命令作为基本兼容性测试
 echo -n "[3/3] Checking compatibility (Dry Run)... "
-if "$CRASH_CMD" --minimal "$VMLINUX_PATH" "$VMCORE_PATH" <<EOF > /dev/null 2>&1
-quit
-EOF
-then
+if echo "sys" | timeout 30 "$CRASH_CMD" "$VMLINUX_PATH" "$VMCORE_PATH" > /dev/null 2>&1; then
     echo "OK"
     echo "----------------------------------------"
     echo "✅ Environment check passed! You are ready to analyze."
@@ -99,6 +98,6 @@ else
     echo "FAILED"
     echo "Error: crash execution failed. The vmlinux and vmcore files may not match, or the files are corrupted."
     echo "Try running manually to see details:"
-    echo "$CRASH_CMD --minimal $VMLINUX_PATH $VMCORE_PATH"
+    echo "   echo 'sys' | $CRASH_CMD $VMLINUX_PATH $VMCORE_PATH"
     exit 1
 fi

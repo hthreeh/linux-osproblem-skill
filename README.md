@@ -17,20 +17,36 @@
 - `assets/`: 报告模板
 - `evals/`: 评测样例
 - `references/`: 按主题整理的排障参考资料
+  - `common/`: 通用参考（命令、日志、性能方法论等）
+  - `scenarios/`: 场景参考（网络、启动、容器、安全）
+  - `oom/`: OOM 专项分析方法论
 - `scripts/`: 通用入口脚本
-- `scripts/vmcore/`: `vmcore + crash` 深度分析脚本
+- `scripts/vmcore/`: `vmcore + crash` 深度分析 + OOM 专项脚本
 
 ## 主要脚本
+
+### 诊断入口
 
 - `scripts/diagnose.sh`: 总入口，支持 `auto/kernel/userspace/perf/hang/network/storage`
 - `scripts/collect_info.sh`: 收集基础系统信息
 - `scripts/quick_diagnosis.sh`: 快速自动分类（按 P1/P2 严重度排序检测）
+
+### vmcore / crash 深度分析
+
 - `scripts/vmcore/check_environment.sh`: 检查 `crash / vmlinux / vmcore` 环境
 - `scripts/vmcore/crash_config.sh`: 保存和测试 `crash` 分析配置
 - `scripts/vmcore/quick_report.sh`: 生成初步 crash 报告
 - `scripts/vmcore/evidence_chain.sh`: 生成证据链（支持 `--batch` 批处理模式）
 - `scripts/vmcore/rca_wizard.sh`: 交互式 RCA 向导（支持 `--batch` 批处理模式）
 - `scripts/vmcore/analyze_struct.py`: 解析 crash 导出的结构体信息
+
+### OOM 专项分析
+
+- `scripts/vmcore/collect_basic_info.sh`: OOM 全量信息收集（基础信息 + 日志一体化）
+- `scripts/vmcore/system_oom.sh`: 系统级 OOM 专项诊断
+- `scripts/vmcore/process_oom.sh`: 进程级 OOM 专项诊断
+- `scripts/vmcore/cgroup_oom.sh`: cgroup OOM 专项诊断
+- `scripts/vmcore/kernel_oom.sh`: 内核态 OOM 专项诊断
 
 `scripts/` 根目录中的部分脚本是 wrapper，会转发到 `scripts/vmcore/`。当前实现已经兼容“从 Windows 拷到 Linux 后脚本没有执行位”的常见场景。
 
@@ -70,6 +86,26 @@ bash scripts/vmcore/evidence_chain.sh
 bash scripts/vmcore/rca_wizard.sh
 ```
 
+### 5. OOM 专项诊断
+
+```bash
+# 系统级 OOM 信息收集
+bash scripts/vmcore/collect_basic_info.sh \
+  -S "2024-01-15 14:00:00" -E "2024-01-15 15:00:00"
+
+# 进程级 OOM（精确 PID）
+bash scripts/vmcore/process_oom.sh \
+  -S "2024-01-15 14:00:00" -p 12345
+
+# cgroup OOM
+bash scripts/vmcore/cgroup_oom.sh \
+  -S "2024-01-15 14:00:00" -E "2024-01-15 15:00:00"
+
+# 内核态 OOM
+bash scripts/vmcore/kernel_oom.sh \
+  -S "2024-01-15 14:00:00" -E "2024-01-15 15:00:00"
+```
+
 ## 工件要求
 
 ### 完整 vmcore 分析
@@ -86,6 +122,20 @@ bash scripts/vmcore/rca_wizard.sh
 crash> sys
 crash> log
 crash> bt
+```
+
+### OOM 分析
+
+优先提供：
+
+- 故障时间段（开始时间 -S，可选结束时间 -E）
+- 目标进程（PID / 进程名 / 服务名，系统级可不提供）
+- `/var/log/messages` 或 `journalctl` 访问权限
+
+最小调用示例：
+
+```bash
+bash scripts/vmcore/collect_basic_info.sh -S "2024-01-15 14:00:00"
 ```
 
 ### 只有 /var/crash/*.crash 时

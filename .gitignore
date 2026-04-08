@@ -6,9 +6,9 @@ os-info-*/
 
 # 用户工件（vmcore/coredump 等，通常很大且敏感）
 *.vmcore
-vmcore
+/vmcore
 *.core
-core
+/core
 *.crash
 *.elf
 

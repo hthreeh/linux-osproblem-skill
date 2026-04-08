@@ -316,7 +316,7 @@ info args
 # 系统级 OOM
 bash scripts/vmcore/collect_basic_info.sh -S "2024-01-15 14:00:00" -E "2024-01-15 15:00:00"
 
-# 精确 PID
+# 精确 PID（-E 可选，默认 +1h）
 bash scripts/vmcore/collect_basic_info.sh -S "2024-01-15 14:00:00" -p 12345
 
 # 模糊进程名
@@ -431,7 +431,7 @@ bash scripts/vmcore/kernel_oom.sh -S "2024-01-15 14:00:00" -E "2024-01-15 15:00:
 | cgroup OOM | memory.failcnt增加，特定容器OOM | `cat /sys/fs/cgroup/memory/*/memory.failcnt` |
 | Slab膨胀 | Slab >> 正常值，dentry/inode异常 | `slabtop -o` |
 | Shmem异常 | Shmem >> 正常值，tmpfs大文件 | `df -h /dev/shm; lsof +D /tmp` |
-| kdump预留 | MemTotal远小于物理内存 | `dmesg \| grep -i "reserved\|crashkernel"` |
+| kdump预留 | MemTotal远小于物理内存 | `dmesg \| grep -iE "reserved\|crashkernel"` |
 | 内核模块泄漏 | total >> anon+file+slab之和 | `lsmod; cat /proc/vmallocinfo` |
 
 ## 迭代诊断

@@ -42,7 +42,17 @@ awk -v cores="$CORES" '{
 echo ""
 echo "  # 当下综合 CPU 极速采样 (取1秒):"
 if command -v top &>/dev/null; then
-    timeout 5 top -bn2 2>/dev/null | grep '^%Cpu' | tail -1 | awk '{printf "  用户态(usr) %4s | 内核态(sys) %4s | IO等待(wa) %4s | 软硬中断(si) %4s | 空闲(id) %4s\n", $2,$4,$10,$14,$8}' || echo "  [获取 CPU 快照失败]"
+    timeout 5 top -bn2 2>/dev/null | grep '^%Cpu' | tail -1 | awk -F',' '{
+        us="0.0"; sy="0.0"; wa="0.0"; si="0.0"; id="0.0";
+        for(i=1;i<=NF;i++) {
+            if($i~/ us/) { gsub(/[^0-9.]/,"",$i); us=$i }
+            else if($i~/ sy/) { gsub(/[^0-9.]/,"",$i); sy=$i }
+            else if($i~/ wa/) { gsub(/[^0-9.]/,"",$i); wa=$i }
+            else if($i~/ si/) { gsub(/[^0-9.]/,"",$i); si=$i }
+            else if($i~/ id/) { gsub(/[^0-9.]/,"",$i); id=$i }
+        }
+        printf "  用户态(usr) %4s | 内核态(sys) %4s | IO等待(wa) %4s | 软硬中断(si) %4s | 空闲(id) %4s\n", us, sy, wa, si, id
+    }' || echo "  [获取 CPU 快照失败]"
 else
     echo "  [缺少 top 工具]"
 fi
@@ -152,7 +162,7 @@ timeout 10 dmesg -T 2>/dev/null | grep -iE "blocked for|hung_task|soft lockup|rc
 
 section "[DETAIL-3] VMSTAT 内存/IO联排快照"
 if command -v vmstat &>/dev/null; then
-    vmstat -w 1 5 2>/dev/null || vmstat 1 5
+    timeout 15 vmstat -w 1 5 2>/dev/null || timeout 15 vmstat 1 5 2>/dev/null || echo "vmstat 挂起或执行失败"
 else
     echo "无 vmstat 命令"
 fi

@@ -423,48 +423,11 @@ deep_network() {
     local d="$OUTPUT_DIR/network_deep"
     mkdir -p "$d"
 
-    # 接口统计
-    safe_run "$d/ip_addr.txt"    ip -s addr
-    safe_run "$d/ip_link.txt"    ip -s link
-
-    # 路由
-    safe_run "$d/ip_route.txt"   ip route show table all
-    safe_run "$d/ip_rule.txt"    ip rule show
-
-    # 防火墙规则
-    safe_run "$d/iptables.txt"   iptables-save
-    safe_run "$d/ip6tables.txt"  ip6tables-save
-    if has_cmd nft; then
-        safe_run "$d/nftables.txt" nft list ruleset
+    # 调用 [网络专项引擎]
+    if has_script "$SCRIPT_DIR/network/system_net.sh"; then
+        log_info "执行 AI 智能结构化网络诊断..."
+        bash "$SCRIPT_DIR/network/system_net.sh" "$d" || log_warn "网络专项诊断异常"
     fi
-
-    # 连接状态
-    safe_run "$d/ss_all.txt"     ss -tunap
-    safe_run "$d/ss_summary.txt" ss -s
-    if has_cmd netstat; then
-        safe_run "$d/netstat.txt" netstat -s
-    fi
-
-    # conntrack
-    if has_cmd conntrack; then
-        safe_run "$d/conntrack_stats.txt" conntrack -S
-        safe_run "$d/conntrack_count.txt" conntrack -C
-    fi
-
-    # ethtool 逐接口
-    if has_cmd ethtool; then
-        {
-            for iface in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -v lo); do
-                echo "=== $iface ==="
-                timeout "$CMD_TIMEOUT" ethtool "$iface" 2>/dev/null || echo "[失败]"
-                timeout "$CMD_TIMEOUT" ethtool -S "$iface" 2>/dev/null || true
-                echo ""
-            done
-        } > "$d/ethtool.txt"
-    fi
-
-    # DNS
-    safe_cat /etc/resolv.conf "$d/resolv.conf.txt"
 
     # 抓包准备提示
     {
@@ -472,12 +435,6 @@ deep_network() {
         echo "  tcpdump -i <接口> -c 1000 -w capture.pcap"
         echo "  tcpdump -i any -nn -s0 port <端口> -w capture.pcap"
     } > "$d/tcpdump_hint.txt"
-
-    # 网络相关 dmesg
-    if has_cmd dmesg; then
-        dmesg 2>/dev/null | grep -iE 'link is down|carrier lost|nf_conntrack|dropped|net_ratelimit' \
-            > "$d/network_dmesg.txt" 2>/dev/null || true
-    fi
 }
 
 deep_storage() {

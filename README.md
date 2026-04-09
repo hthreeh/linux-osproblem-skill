@@ -55,6 +55,13 @@
   - Ulimit 与 Inotify 的配额穿透
   - IPC 异常检查与中断风暴过滤
 
+### 连通性与网络深水区分析 (Branch E)
+
+- `scripts/network/system_net.sh`: 结构化处理 Linux 网络栈的分析引擎，涵盖：
+  - Conntrack/NAT表与 ARP 缓存饱和度熔断预警
+  - 局域网 IP/MAC 冲突主动试探
+  - 路由与 MTU 路径探测及分片异常
+
 `scripts/` 根目录中的部分脚本是 wrapper，会转发到 `scripts/vmcore/`。当前实现已经兼容“从 Windows 拷到 Linux 后脚本没有执行位”的常见场景。
 
 ## 快速使用

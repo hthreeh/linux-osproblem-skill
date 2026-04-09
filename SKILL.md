@@ -441,6 +441,24 @@ bash scripts/vmcore/kernel_oom.sh -S "2024-01-15 14:00:00" -E "2024-01-15 15:00:
 | kdump预留 | MemTotal远小于物理内存 | `dmesg \| grep -iE "reserved\|crashkernel"` |
 | 内核模块泄漏 | total >> anon+file+slab之和 | `lsmod; cat /proc/vmallocinfo` |
 
+## 分支 E：连通性与网络深水区分析
+
+对于各种网络不通、连接被频繁 `Connection Reset`/`Timeout` 或局部设备存在网络冲突的情况，调用内部引擎进行排查：
+
+```bash
+bash scripts/network/system_net.sh <OUTPUT_DIR> [DEST_IP]
+```
+或者使用总集成入口进行自动收集：
+```bash
+bash scripts/diagnose.sh network
+```
+
+**[SUMMARY] 高关注度领域：**
+1. **网络连接池枯竭**：检查并上报 `nf_conntrack` 是否达到阈值从而拒绝服务。
+2. **邻居子系统溢出**：预警 ARP 子系统的 `gc_thresh` 硬上限，排查无法分配 MAC 的底层报错。
+3. **局域网物理冲突**：自动并行对本地同段 IP 进行 `arping` 试探，抓出导致频繁上下线的局域网内鬼 MAC。
+4. **MTU 黑洞与分片**：如果指定目标 IP，自动以二分降级的方式探测通往目标的“无碎片最大负荷 (Payload Size)”，判定是否存在丢包的 MTU 瓶颈点。
+
 ## 迭代诊断
 
 复杂问题按四轮推进：

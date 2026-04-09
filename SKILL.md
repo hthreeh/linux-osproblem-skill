@@ -237,25 +237,32 @@ info args
 - `references/common/segfault-types.md`
 - `references/common/command-reference.md`
 
-## 分支 C：性能问题
+## 分支 C：性能与资源消耗瓶颈问题（已合并智能模块）
 
-遵循 USE 方法和红灯信号法：
+遵循 USE 方法和红灯信号法诊断：
+1. CPU 瓶颈与调度器积压（D/Z/R 状态风暴）
+2. 限流配额（ulimit / fd / Inotify Watches 限定穿透）
+3. IPC 异常（消息队列/共享内存爆满）
+4. 抢占与死锁类高载（硬软中断失调，如软锁死或 RCU 风暴）
 
-1. CPU
-2. 内存
-3. IO
-4. 网络
+### C1. 一键全盘智能诊断
 
-优先工具：
+遇到疑似性能负载或诡异的 `Resource temporarily unavailable` 反馈时，直接调用：
+```bash
+bash scripts/perf/system_perf.sh ./perf_report
+```
 
-- `perf`
-- `sar`
-- `iostat`
-- `vmstat`
-- `pidstat`
+该脚本将直出带有 `[SUMMARY]` 表格的秒级快照，帮助你三秒内判断系统是在堵 IO、堵 CPU 排队、还是堵系统内核参数。
+详细的命令底层探针涵盖：`mpstat`、`vmstat`、`ps 状态树`、`/proc/loadavg`。
+
+### C2. 传统高精度采样分析
+
+如果 `[SUMMARY]` 提示需要深挖调用链或长时跟踪，配合以下底层探针分析细节：
+- `perf stat` / `perf record` (绘制火焰图)
+- `sar` (历史趋势回溯)
+- `pidstat / iostat`
 
 详细方法参考：
-
 - `references/common/perf-methodology.md`
 - `references/common/log-patterns.md`
 

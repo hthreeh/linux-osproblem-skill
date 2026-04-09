@@ -8,12 +8,12 @@
 - 性能问题：CPU、内存、IO、网络异常
 - 通用系统问题：启动失败、容器、网络、存储、安全事件
 
-仓库主体是 Skill 说明、参考资料和一组辅助脚本，适合被 Codex / ChatGPT 类技能系统加载，也可以单独拿脚本做现场辅助分析。
+仓库主体是完全遵循格式化声明的通用 AI Skill 模型，**不受任何闭源或开源具体厂商的绑定，只要具备能力调用外部工具链的大语言模型（如 ChatGPT, Claude, Llama, DeepSeek, Qwen 等），皆可无缝挂载。** 同时它也适合作为专家脚本手册被现场运维工程师离线执行。
 
 ## 目录结构
 
 - `SKILL.md`: Skill 主说明，定义适用范围、分流逻辑和分析方法
-- `agents/openai.yaml`: agent 配置
+- `agents/manifest.yaml`: Agent 模型侧挂载配置与 Prompt (之前为 openai.yaml，现已更名为平台无关版本)
 - `assets/`: 报告模板
 - `evals/`: 评测样例
 - `references/`: 按主题整理的排障参考资料
@@ -47,6 +47,13 @@
 - `scripts/vmcore/process_oom.sh`: 进程级 OOM 专项诊断
 - `scripts/vmcore/cgroup_oom.sh`: cgroup OOM 专项诊断
 - `scripts/vmcore/kernel_oom.sh`: 内核态 OOM 专项诊断
+
+### 性能与调度基线分析 (Branch C)
+
+- `scripts/perf/system_perf.sh`: 统筹多方性能维度的神经中枢（输出高度浓缩的 [SUMMARY] 以防 AI 溢出），涵盖：
+  - 核心过载预警与排队积压
+  - Ulimit 与 Inotify 的配额穿透
+  - IPC 异常检查与中断风暴过滤
 
 `scripts/` 根目录中的部分脚本是 wrapper，会转发到 `scripts/vmcore/`。当前实现已经兼容“从 Windows 拷到 Linux 后脚本没有执行位”的常见场景。
 
@@ -163,8 +170,9 @@ bash scripts/vmcore/collect_basic_info.sh -S "2024-01-15 14:00:00"
 
 这个仓库更适合被当作：
 
-- Codex / ChatGPT Skill 仓库
-- Linux OS 问题排障知识库
+- **大语言模型通用 Skill 插件**（ChatGPT / 甚至企业内部私有部署的 Agent 模型底座）
+- 高信噪比系统问题结构化数据生成器
+- Linux OS 闭环排障知识库
 - 现场辅助分析脚本集合
 
 如果你准备继续维护，建议下一步补：

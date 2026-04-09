@@ -210,7 +210,8 @@ detect_storage() {
         return 0
     fi
     # 磁盘空间不足 (>95%)，忽略只读镜像和临时文件系统
-    if df -PT 2>/dev/null | awk '
+    # 注意：df 必须加 timeout，OOM 场景下 IO 风暴可能导致 df 永久挂起
+    if timeout 15 df -PT 2>/dev/null | awk '
         NR > 1 {
             fs_type = $2
             gsub(/%/, "", $6)

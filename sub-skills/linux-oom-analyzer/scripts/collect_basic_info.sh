@@ -172,7 +172,7 @@ END {
 cmd_info "swapon --show 或 cat /proc/swaps" \
     "显示当前 swap 分区/文件的挂载情况和使用量" \
     "若 Used 列持续增大，说明系统在用 swap 缓解内存压力，I/O 延迟会显著上升"
-timeout 10 swapon --show 2>/dev/null || cat /proc/swaps 2>/dev/null || echo "(swapon 超时或失败)"
+swapon --show 2>/dev/null || cat /proc/swaps
 
 # ================================================================
 # PART 3: CPU & 内存压力指标

@@ -157,7 +157,7 @@ printf "    Shmem: %d MB（占总内存 %s%%）  " $((MEM_SHMEM/1024)) "$SHMEM_P
 [ "$(awk "BEGIN{print ($MEM_SHMEM > $MEM_TOTAL*0.10) ? 1 : 0}")" = "1" ] && \
     echo "⚠️  超过10%，需排查" || echo "✅ 正常"
 echo "    tmpfs 挂载点占用:"
-timeout 10 df -h 2>/dev/null | awk '/tmpfs/{printf "      %-30s %6s used / %6s total\n",$6,$3,$2}' || echo "      (df 超时或失败)"
+df -h 2>/dev/null | awk '/tmpfs/{printf "      %-30s %6s used / %6s total\n",$6,$3,$2}'
 echo "    /dev/shm 大文件（>10MB）:"
 find /dev/shm /run -type f -size +10M 2>/dev/null -ls \
     | sort -k7 -rn | head -10 | awk '{printf "      %8.1fMB  %s\n",$7/1024/1024,$NF}' \
@@ -254,7 +254,7 @@ section "[DETAIL-D3] tmpfs 和 /dev/shm 详细内容"
 cmd_info "mount | grep tmpfs  +  find /tmp /dev/shm /run -type f -size +1M" \
     "枚举所有 tmpfs 挂载点并查找大文件，定位 Shmem 内存的具体来源" \
     "tmpfs 挂载点列表；超过 1MB 的文件路径和大小，用于找到占用 Shmem 的具体文件"
-timeout 10 mount 2>/dev/null | grep tmpfs || echo "(mount 超时或失败)"
+mount | grep tmpfs
 echo ""
 echo "--- /dev/shm 内容 ---"
 ls -lah /dev/shm 2>/dev/null

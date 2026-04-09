@@ -320,9 +320,9 @@ deep_perf() {
     mkdir -p "$d"
 
     # 调用 [性能专项引擎]
-    if has_script "$SCRIPT_DIR/scripts/perf/system_perf.sh"; then
+    if has_script "$SCRIPT_DIR/perf/system_perf.sh"; then
         log_info "执行 AI 智能结构化性能诊断..."
-        bash "$SCRIPT_DIR/scripts/perf/system_perf.sh" "$d/system_perf_report" || log_warn "性能专项诊断异常"
+        bash "$SCRIPT_DIR/perf/system_perf.sh" "$d/system_perf_report" || log_warn "性能专项诊断异常"
     fi
 
 

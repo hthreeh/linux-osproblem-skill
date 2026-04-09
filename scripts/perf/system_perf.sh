@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-OUTPUT_DIR="${1:-/tmp/perf_sys_$(date +%Y%m%d_%H%M%S)}"
+OUTPUT_DIR="${1:-/tmp/perf_sys_$(date +%Y%m%d_%H%M%S)_$$}"
 mkdir -p "$OUTPUT_DIR"
 exec > >(tee "$OUTPUT_DIR/system_perf.log") 2>&1
 
@@ -41,10 +41,10 @@ awk -v cores="$CORES" '{
 
 echo ""
 echo "  # 当下综合 CPU 极速采样 (取1秒):"
-if command -v mpstat &>/dev/null; then
-    mpstat 1 1 | awk '/^Average/ {printf "  用户态(usr) %4s%% | 内核态(sys) %4s%% | IO等待(iowait) %4s%% | 软中断(soft) %4s%% | 空闲(idle) %4s%%\n", $3,$5,$6,$8,$12}' || echo "mpstat 失败"
+if command -v top &>/dev/null; then
+    timeout 5 top -bn2 2>/dev/null | grep '^%Cpu' | tail -1 | awk '{printf "  用户态(usr) %4s | 内核态(sys) %4s | IO等待(wa) %4s | 软硬中断(si) %4s | 空闲(id) %4s\n", $2,$4,$10,$14,$8}' || echo "  [获取 CPU 快照失败]"
 else
-    echo "  [缺少 mpstat 工具，无法获取秒级 CPU 拆分]"
+    echo "  [缺少 top 工具]"
 fi
 
 # ── S2: 调度堵点挖掘 ────────────────────────────────
@@ -83,10 +83,16 @@ if [ "$MAX_PROC" != "unlimited" ] && [ "$MAX_PROC" -gt 0 ] 2>/dev/null; then
 fi
 
 INOTIFY_MAX=$(cat /proc/sys/fs/inotify/max_user_watches 2>/dev/null || echo 0)
-if [ "$INOTIFY_MAX" -gt 0 ]; then
-    INOTIFY_NOW=$(find /proc/*/fdinfo/ -type f 2>/dev/null | xargs grep -s 'inotify' 2>/dev/null | wc -l || echo 0)
+if [ -n "$INOTIFY_MAX" ] && [ "$INOTIFY_MAX" -eq "$INOTIFY_MAX" ] 2>/dev/null && [ "$INOTIFY_MAX" -gt 0 ]; then
+    set +o pipefail
+    INOTIFY_NOW=$(timeout 15 find /proc/*/fdinfo/ -type f 2>/dev/null | xargs grep -s 'inotify' 2>/dev/null | wc -l)
+    set -o pipefail
+    
+    # 再次清洗以防出现脏数字
+    INOTIFY_NOW=$(echo "$INOTIFY_NOW" | grep -oE '^[0-9]+$' | tail -1 || echo 0)
+    
     echo "  [目录监控手表 Inotify]"
-    printf "    最大 Watches: %-10d (当前使用: %d)\n" "$INOTIFY_MAX" "$INOTIFY_NOW"
+    printf "    最大 Watches: %-10s (当前使用: %s)\n" "$INOTIFY_MAX" "$INOTIFY_NOW"
     if [ "$INOTIFY_NOW" -gt 0 ]; then
         I_USAGE_PCT=$(( INOTIFY_NOW * 100 / INOTIFY_MAX ))
         [ "$I_USAGE_PCT" -gt 85 ] && echo "    ⚠️  危险: inotify 注册槽位即将耗尽，会引发 IDE崩溃 / tail -f / 文件同步 随机失败！"
@@ -98,11 +104,11 @@ echo ""
 echo "━━━ S4. IPC 进程间通信核查 ━━━"
 if command -v ipcs &>/dev/null; then
     MSG_MAX=$(cat /proc/sys/kernel/msgmni 2>/dev/null || echo 0)
-    MSG_NOW=$(( $(ipcs -q 2>/dev/null | wc -l) - 3 ))
+    MSG_NOW=$(( $(timeout 5 ipcs -q 2>/dev/null | wc -l || echo 3) - 3 ))
     [ "$MSG_NOW" -lt 0 ] && MSG_NOW=0
     
     SHM_MAX=$(cat /proc/sys/kernel/shmmni 2>/dev/null || echo 0)
-    SHM_NOW=$(( $(ipcs -m 2>/dev/null | wc -l) - 3 ))
+    SHM_NOW=$(( $(timeout 5 ipcs -m 2>/dev/null | wc -l || echo 3) - 3 ))
     [ "$SHM_NOW" -lt 0 ] && SHM_NOW=0
     
     printf "  消息队列列数 : %d / %d (配额)\n" "$MSG_NOW" "$MSG_MAX"
@@ -142,7 +148,7 @@ ps -eo pid,user,stat,%cpu,%mem,nlwp,comm --sort=-%cpu | head -21
 
 section "[DETAIL-2] 内核锁死与死等日志 (dmesg 抽检)"
 cmd_info "dmesg" "检索 blocked / soft lockup / hung task"
-dmesg -T 2>/dev/null | grep -iE "blocked for|hung_task|soft lockup|rcu.*stall|I/O error" | tail -30 || echo "无异常挂起日志。"
+timeout 10 dmesg -T 2>/dev/null | grep -iE "blocked for|hung_task|soft lockup|rcu.*stall|I/O error" | tail -30 || echo "无异常挂起日志。"
 
 section "[DETAIL-3] VMSTAT 内存/IO联排快照"
 if command -v vmstat &>/dev/null; then
@@ -152,9 +158,9 @@ else
 fi
 
 section "[DETAIL-4] 内核高危限制 (Modules/Crash Dump)"
-echo "Core Pattern      : $(cat /proc/sys/kernel/core_pattern 2>/dev/null)"
-echo "Softlockup Panic  : $(cat /proc/sys/kernel/softlockup_panic 2>/dev/null)"
-echo "Modules Disabled  : $(cat /proc/sys/kernel/modules_disabled 2>/dev/null)"
+echo "Core Pattern      : $(cat /proc/sys/kernel/core_pattern 2>/dev/null || echo '<不可读>')"
+echo "Softlockup Panic  : $(cat /proc/sys/kernel/softlockup_panic 2>/dev/null || echo '<不可读>')"
+echo "Modules Disabled  : $(cat /proc/sys/kernel/modules_disabled 2>/dev/null || echo '<不可读>')"
 
 section "采集完成"
 echo "✅ 信息已归档至输出目录: $OUTPUT_DIR"

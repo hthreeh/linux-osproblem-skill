@@ -7,6 +7,18 @@ set -euo pipefail
 OUTPUT_DIR="${1:-/tmp/net_sys_$(date +%Y%m%d_%H%M%S)_$$}"
 DEST_IP="${2:-}"
 mkdir -p "$OUTPUT_DIR"
+
+# 验证 DEST_IP 基本格式（允许 IPv4/IPv6 地址或 hostname）
+if [ -n "$DEST_IP" ]; then
+    # 简单校验：不能包含 shell 元字符
+    if echo "$DEST_IP" | grep -qE '[;&|`$()]'; then
+        echo "错误: DEST_IP 包含非法字符: $DEST_IP" >&2
+        exit 1
+    fi
+fi
+
+echo "网络诊断日志将写入: $OUTPUT_DIR/system_net.log"
+echo "开始采集系统网络全景数据..."
 exec > >(tee "$OUTPUT_DIR/system_net.log") 2>&1
 
 section() { echo -e "\n============================================\n$1\n============================================"; }
@@ -34,7 +46,11 @@ fi
 echo "━━━ S2. ARP 缓存溢出限制 (gc_thresh) ━━━"
 thresh3=$(cat /proc/sys/net/ipv4/neigh/default/gc_thresh3 2>/dev/null || echo 0)
 if [ "$thresh3" -gt 0 ] 2>/dev/null; then
-    total_entries=$(timeout 5 ip neigh show 2>/dev/null | wc -l || echo 0)
+    # 临时关闭 pipefail 防止 grep 无匹配时返回 1 导致 "0\n0" bug
+    set +o pipefail
+    total_entries=$(timeout 5 ip neigh show 2>/dev/null | wc -l)
+    set -o pipefail
+    total_entries=$(echo "$total_entries" | grep -oE '^[0-9]+$' | tail -1 || echo 0)
     usage_pct=$((total_entries * 100 / thresh3))
     printf "  ARP 条目: %s / %s (硬上限) (使用率: %s%%)\n" "$total_entries" "$thresh3" "$usage_pct"
     if [ "$usage_pct" -ge 90 ]; then

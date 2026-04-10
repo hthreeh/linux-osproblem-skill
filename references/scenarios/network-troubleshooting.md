@@ -1,496 +1,730 @@
-# 网络故障诊断指南
+---
+name: network-diagnosis
+description: 网络故障诊断技能。当出现某个ip或者某个网口（或者网卡）出现不通、丢包、延时、抖动等问题，或者某台服务器出现网络不通/延时等问题时使用该技能。
+---
 
-本文档详细介绍Linux网络故障的诊断方法与排查流程，重点面向openEuler/CentOS/RHEL系统。
+# 网络故障诊断 Skill
+
+> ⚠️ **【绝对禁止】安全红线声明** ⚠️
+>
+> **本技能严格遵循"只诊断、不修复"原则，Agent 必须遵守以下强制规定：**
+>
+> 1. **【严禁自动执行修复命令】**：Agent 绝对禁止自动执行任何修复类命令（包括但不限于：修改网络配置、重启网络服务、修改防火墙规则、修改路由表、修改 DNS 配置、重启网卡等）。
+>
+> 2. **【只提供修复建议】**：Agent 只能向用户提供修复建议，由用户自行决定是否执行。
+>
+> 3. **【必须标注风险等级】**：所有修复建议必须标注风险等级和风险提示：
+>    - 🔴 **高危操作**：可能导致服务中断、数据丢失、系统不稳定的操作
+>    - 🟡 **中危操作**：可能影响部分服务或需要谨慎评估的操作
+>    - 🟢 **低危操作**：风险较低，通常可安全执行的操作
+>
+> 4. **【必须包含回滚方案】**：高危操作的建议必须同时提供回滚方案。
+>
+> **违反以上规定的输出将被视为严重错误，必须立即纠正。**
+
+本技能为运维/工程师提供一套 **网络故障诊断步骤与报告模板**，适用于以下典型场景：
+
+- 业务反馈某台服务器网络不通或时延显著升高。
+- 某个端口或服务偶发/持续不可用。
+- 仅部分网段（如某机房、某业务网段）访问异常。
+
+> **重要**：所有诊断操作由 Agent 主动执行，**禁止要求用户自行执行命令或脚本**。
+
+## Skill 目录结构
+
+本技能包含以下文件，请勿自行创建或重写这些文件：
+
+```text
+network-diagnosis/
+├── SKILL.md                 # 主指令文档（本文件）
+├── scripts/
+│   ├── collect_snapshot.sh  # 快照采集脚本（核心脚本，请直接调用）
+│   ├── ip_conflict_check.sh # IP 冲突检测脚本
+│   └── README.md            # 脚本使用说明
+└── references/
+    └── firewall-guide.md    # 防火墙规则解读指南
+```
+
+> **重要**：`scripts/collect_snapshot.sh` 是本技能提供的核心采集脚本，位于本 Skill 目录下。
+> 使用时请通过相对路径调用：`bash scripts/collect_snapshot.sh ...`
+> **请勿自行编写或重写采集脚本**，直接使用现有脚本即可。
+
+> **使用范围与定位原则**
+> - 若用户明确指出 **某个 IP / 某个网口（或网卡）** 出现不通、丢包、延时、抖动等问题：  
+>   - 以该 IP/接口为主线进行 **精准定位**（优先围绕该接口的链路状态、邻居表、路由、端口可达性与相关日志展开），避免无关信息干扰。
+> - 若用户描述的是 **某台服务器整体** 网络不通/延时等（未指定具体 IP/接口，或影响范围不清）：  
+>   - 需要对该服务器的 **所有网卡/子接口** 进行覆盖分析，并结合路由与流量路径逐一排查，避免遗漏“某一块网卡异常”或“策略路由导致部分路径异常”的情况。
 
 ---
 
-## 1. 网络故障概述
+## 诊断排查流程
 
-### 常见网络问题分类
+本技能推荐遵循以下 **「快照采集 → 综合分析 → 分支收敛 → 根因定位」** 的四步排查流程，结合多源网络数据进行系统性诊断。
 
-| 类别 | 典型表现 | 影响范围 |
-|------|----------|----------|
-| 网络不通 | ping不通、连接拒绝、连接超时 | 业务完全中断 |
-| 丢包 | 间歇性连接失败、传输慢 | 业务不稳定 |
-| TCP连接异常 | 连接超时、连接重置、半连接堆积 | 特定服务受影响 |
-| 网络延迟 | 响应慢、吞吐量低 | 业务性能下降 |
-| 网卡/驱动问题 | 网卡不可用、错误计数增长 | 主机级故障 |
-| 虚拟网络问题 | 容器/虚机网络不通 | 虚拟化环境故障 |
-| 防火墙规则阻断 | 特定端口/IP不可达 | 特定流量受影响 |
-
-### 诊断方法论（OSI分层法）
-
-自下而上逐层排查，快速定位故障层级：
-
-```
-物理层 → 链路层 → 网络层 → 传输层 → 应用层
- 网线     ARP      IP/路由    TCP/UDP    HTTP等
- 光模块   VLAN     ICMP       端口       DNS
- 网卡状态  MAC      防火墙     连接状态    应用配置
-```
-
-**原则**：先排除底层问题，再排查高层问题。底层故障会导致高层全部异常。
+> ⚠️ **【强制执行顺序】流程红线声明** ⚠️
+>
+> **本技能必须严格按照以下顺序执行，禁止跳过任何阶段：**
+>
+> ```
+> Phase 1: 快照采集 → Phase 2: 综合分析 → Phase 3: 分支收敛 → Phase 4: 根因定位
+>     ↓              ↓                  ↓                  ↓
+>   必须完成        必须完成            必须完成            必须完成
+>   才能进入        才能进入            才能进入            才能输出
+>   Phase 2        Phase 3            Phase 4            最终报告
+> ```
+>
+> **禁止行为**：
+> 1. ❌ **禁止跳过阶段**：不得在未完成当前阶段的情况下进入下一阶段
+> 2. ❌ **禁止提前诊断**：在完成 Phase 2 综合分析前，不得输出任何诊断结论
+> 3. ❌ **禁止边采边分析**：在完成所有快照文件采集和读取前，不得进行任何分析
+>
+> **违反以上规定的诊断结果将被视为严重错误，必须重新执行完整流程。**
 
 ---
 
-## 2. 网络故障分类
+### 1. 快照采集 (Phase 1: Snapshot Collection)
 
-### 2.1 网络不通/连接失败
+**目标**：通过脚本化采集一次性获取网络与系统的完整状态快照，为后续分析提供数据基础。
 
-#### Ping不通的排查流程
+#### 1.0 收集故障时间窗口（必须首先完成）
 
-| 层级 | 检查项 | 命令 | 正常结果 |
-|------|--------|------|----------|
-| 链路层 | 网卡状态 | `ip link show eth0` | state UP |
-| 链路层 | 物理连接 | `ethtool eth0` | Link detected: yes |
-| 链路层 | ARP解析 | `ip neigh show` | 目标IP有MAC映射 |
-| 网络层 | IP地址 | `ip addr show eth0` | IP/掩码正确 |
-| 网络层 | 路由表 | `ip route get <目标IP>` | 路由存在 |
-| 传输层 | 端口监听 | `ss -tlnp \| grep <端口>` | LISTEN状态 |
-| 传输层 | 防火墙 | `iptables -L -n -v` | 无阻断规则 |
+> ⚠️ **【强制要求】时间窗口是日志分析的核心依据** ⚠️
+>
+> **必须向用户收集故障时间信息，用于后续日志过滤和关联分析。缺少时间窗口将导致历史告警干扰诊断结论。**
+
+**步骤 1：确认当前时间**
+
+首先必须明确当前系统时间，**禁止猜测时间**：
 
 ```bash
-# 链路层快速检查
-ip link set eth0 up
-ethtool eth0 | grep "Link detected"
-arping -I eth0 <目标IP>
-
-# 网络层检查
-ip route get <目标IP>
-ip rule show                          # 策略路由
-traceroute -n <目标IP>
-
-# 传输层检查
-ss -tlnp | grep <端口>
-nc -zv <目标IP> <端口>
+# 在目标服务器上执行
+date '+%Y-%m-%d %H:%M:%S'
 ```
 
-#### 路由问题
+记录当前时间：`当前时间: YYYY-MM-DD HH:MM:SS`
 
-| 问题 | 症状 | 诊断命令 |
-|------|------|----------|
-| 默认路由丢失 | 无法访问外网 | `ip route show default` |
-| 路由黑洞 | 特定网段不通 | `ip route get <IP>` |
-| 策略路由冲突 | 部分流量异常 | `ip rule show` |
-| 非对称路由 | 去程通回程不通 | 两端`traceroute` |
+**步骤 2：确定时间窗口并输出**
 
-#### DNS解析问题
+根据用户描述，计算故障时间窗口并输出绝对时间：
+
+| 用户描述 | 时间窗口设定 |
+|---------|-------------|
+| 明确时间点 | `[故障时间 - 5分钟, 故障时间 + 持续时间 + 5分钟]` |
+| "刚才/刚刚" | `[当前时间 - 30分钟, 当前时间]` |
+| "今天上午/下午" | `[对应时段开始, 对应时段结束]` |
+| "间歇性/偶尔" | `[当前时间 - 2小时, 当前时间]` |
+| 无法确定 | `[当前时间 - 1小时, 当前时间]` |
+
+**输出格式**：
+```
+当前时间: 2026-03-23 17:13:00
+故障时间窗口: 2026-03-23 16:43 - 2026-03-23 17:13
+```
+
+> ⚠️ **【强制要求】时间格式规范**：
+>
+> - **必须先获取当前时间**，禁止猜测或假设时间
+> - **必须输出绝对时间**，禁止使用相对时间（如 "30 minutes ago"、"yesterday"）
+> - 时间格式统一为：`YYYY-MM-DD HH:MM`
+> - 转换示例：
+>   - 当前时间 2026-03-23 17:13 + 用户说"刚才" → 输出 `2026-03-23 16:43 - 2026-03-23 17:13`
+>   - 当前时间 2026-03-23 17:13 + 用户说"昨天下午" → 输出 `2026-03-22 12:00 - 2026-03-22 18:00`
+
+> ⚠️ **重要**：时间窗口确定后，后续所有日志分析（dmesg、journalctl）必须**只关注该时间窗口内的记录**，排除历史告警的干扰。
+
+#### 1.1 场景识别（必须完成）
+
+根据用户问题描述，识别当前诊断场景：
+
+| 场景类型 | 识别特征 | 诊断范围 |
+|---------|---------|---------|
+| **场景A：指定网口** | 用户明确指出某个网口/IP出现问题（如"eth0断网"、"192.168.1.100不通"） | 聚焦该网口及其相关路径，**禁止偏离到其他网口** |
+| **场景B：整机异常** | 用户描述服务器整体网络问题，未指定具体网口（如"服务器网络不通"、"间歇性断网"） | 覆盖所有网卡/子接口 |
+
+**识别示例**：
+- "我的服务器76.53.183.189某个网口间歇性断网" → **场景B**（未指定具体网口，需检查所有网口）
+- "服务器eth0接口丢包严重" → **场景A**（指定了eth0）
+- "服务器无法访问外网" → **场景B**（未指定网口，整机异常）
+- "192.168.1.100这个IP不通" → **场景A**（指定了IP，需定位对应网口）
+
+> ⚠️ **【强制要求】场景A聚焦原则** ⚠️>
+>
+> **当用户指定了具体网口时，诊断必须严格聚焦于该网口：**
+>
+> 1. **禁止转向其他网口**：即使用户指定的网口看起来"正常"而其他网口有异常，也不得偏离诊断焦点
+> 2. **禁止假设用户搞错**：不得假设用户"应该关心"其他网口，用户的问题必须被优先回答
+> 3. **必须解释指定网口的问题**：即使其他网口问题看起来更严重，也必须首先解释用户指定的网口为什么不正常
+> 4. **其他网口仅作辅助参考**：其他网口的异常只能作为辅助证据或潜在风险提示，不能作为诊断结论的主体
+> 5. **根因必须与指定网口相关**：最终报告的根因必须能够解释指定网口的问题，不能只解释其他网口的问题
+>
+> **错误诊断过程示例**：
+> ```
+> 用户说："enp4s0网络不通"
+> 
+> ❌ 错误诊断：
+> 发现 enp4s0 没有配置 IP 地址 → 认为"这个接口不重要" → 转向分析 enp3s0
+> 发现 enp3s0 外网 ping 不通 → 结论："外网不通"
+> 
+> 问题：完全忽略了用户的问题，没有解释 enp4s0 为什么"不通"
+> ```
+>
+> **正确诊断过程示例**：
+> ```
+> 用户说："enp4s0网络不通"
+> 
+> ✅ 正确诊断：
+> 1. 检查 enp4s0 状态：发现 RX dropped = 356190（大量丢包）
+> 2. 检查 ARP 表：发现使用率 195%（超过上限）
+> 3. 建立因果链：ARP 表满 → 无法创建新条目 → enp4s0 入站流量被丢弃
+> 4. 结论："enp4s0 因 ARP 表满导致入站丢包"
+> 
+> 即使 enp4s0 没有 IP，也解释了它"不通"的原因
+> ```
+
+> ⚠️ **重要**：场景识别决定了后续所有检查的范围，必须在执行任何诊断命令前完成。
+
+#### 1.2 执行快照采集与底账提取
+
+直接运行总入口脚本或专项网络引擎采集全部状态（系统会自动处理冲突检测与连接池限制探测）：
 
 ```bash
-cat /etc/resolv.conf
-nslookup <域名>
-dig <域名> +trace
-dig @<DNS服务器> <域名>
-grep hosts /etc/nsswitch.conf
+# 方法一：从总控调用（推荐）
+bash scripts/diagnose.sh network
+
+# 方法二：直接调用底层引擎并注入探针 IP
+bash scripts/network/system_net.sh /tmp/net_diag <可选_关键目标IP>
 ```
+
+> **重要**：
+> - 新引擎会自动并发探测所有本地网卡的 ARP 冲突与 IP 霸占。
+> - 如果指定了目标 IP，会自动激活 MTU 路径折半降级探测。
+> - 最终产出将在指定的 `/tmp/net_diag` 或 `diagnose.sh` 分配的 `network_deep/` 目录下的 `system_net.log` 甚至 `DETAIL-4` 原始附加账本中呈现。
+
+**输出文件**：`/tmp/net_diag/snapshot_YYYYmmdd_HHMMSS/ip_conflict_check.txt`
+
+**输出说明**：
+- `✅ 结论: 无 IP 冲突` - 正常，所有检测的IP均无冲突
+- `❌ 结论: 存在 IP 冲突` - 需要处理，脚本会列出冲突IP和冲突设备MAC
+- `SKIP: arping 未安装` - 跳过检测，需安装arping后重试
+
+> ⚠️ **重要**：IP冲突检测结果保存在快照目录内，与其他快照文件一起，在综合分析阶段统一读取。
+
+#### 1.3 确定目标接口`target_ifaces[]`
+
+根据快照文件进行选择：
+
+- **聚焦接口**：若传了 `--iface`，以 `iface_<iface>_details.txt` 与 `ip_link_stats.txt` 为主线，记录为 `target_ifaces[]`。
+- **全量覆盖**：若未指定接口，以 `ip_link_stats.txt` 与 `ip_addr.txt` 中所有 UP 的物理口/bond/vlan 子接口组成 `target_ifaces[]`。
+- **路径确认**：若传了 `--dest`，以 `route_get_<dest>.txt` 为准确认实际出接口与下一跳，并用于校验 `target_ifaces[]` 是否覆盖真实路径。
+
+> ✅ **Phase 1 完成检查点**：在进入 Phase 2 前，必须确认以下条件全部满足：
+> - [ ] 已收集故障时间窗口（开始时间、结束时间）
+> - [ ] 已执行快照采集脚本，生成快照目录
+> - [ ] 已执行IP冲突检测脚本，结果保存到快照目录
+> - [ ] 已确定 `target_ifaces[]`（目标接口列表）
+> - [ ] 快照目录中包含所有必要的 `.txt` 文件
+>
+> **若以上任一条件未满足，禁止进入 Phase 2。**
 
 ---
 
-### 2.2 丢包问题
+### 2. 综合分析 (Phase 2: Comprehensive Analysis)
 
-#### 网卡级丢包
+**目标**：基于快照文件进行全量分析，通过多源数据交叉验证，识别异常信号并确定诊断方向。
 
-| 丢包类型 | 检查命令 | 关键指标 |
-|----------|----------|----------|
-| RX/TX丢包 | `ifconfig eth0` | dropped计数 |
-| Ring Buffer溢出 | `ethtool -S eth0` | rx_missed_errors |
-| CRC错误 | `ethtool -S eth0` | rx_crc_errors |
+> **强制原则**：
+> - **禁止早停**：不允许在未读完所有文件前得出任何结论。
+> - **禁止边读边分析**：必须先完成所有文件的读取，再进行综合分析。
+> - **禁止跳过文件**：下表列出的所有文件必须逐一读取，不得遗漏。
+>
+> 单一指标的异常可能被其他证据推翻或修正，只有综合所有证据才能得出准确结论。
 
-```bash
-ethtool -S eth0 | grep -i "drop\|error\|miss\|crc"
-ethtool -g eth0                       # 查看Ring Buffer大小
-ethtool -G eth0 rx 4096 tx 4096       # 增大Ring Buffer
+#### 2.1 读取所有快照文件（必须完成 100% 后才能进入下一步）
+
+**执行方式**：
+1. 使用批量读取方式，一次性发起所有文件的读取请求
+2. 等待所有文件读取完成后，再进行任何分析
+3. **禁止**在读取过程中进行任何推理或得出任何结论
+
+**示例执行模式**：
+```
+# 正确：批量读取所有文件 → 等待完成 → 统一分析
+read(file1, file2, file3, ..., file18)
+wait_all_complete()
+analyze_all()
+
+# 错误：边读边分析
+read(file1) → analyze() → read(file2) → analyze()  ❌
 ```
 
-#### 内核网络栈丢包
+必须读取以下文件（全部必读，无优先级区分）：
 
-| 丢包位置 | 检查方法 | 关键指标 |
-|----------|----------|----------|
-| IP层 | `/proc/net/snmp` | InDiscards, InHdrErrors |
-| TCP层 | `/proc/net/snmp` | TCPAbortOnMemory |
-| UDP层 | `/proc/net/snmp` | RcvbufErrors |
-| 软中断 | `/proc/net/softnet_stat` | 第二列（time_squeeze） |
-| conntrack | `conntrack -S` | drop计数 |
+| 文件 | 核心关注点 |
+|------|-----------|
+| `ip_link_stats.txt` | 接口状态、丢包/错误计数 |
+| `iface_<iface>_details.txt` | 目标接口的 ethtool 详情 |
+| `ip_addr.txt` | IP 地址配置 |
+| `ip_route_main.txt` | 默认路由、关键网段路由 |
+| `ip_route_all.txt` | 黑洞路由、策略路由表 |
+| `ip_rule.txt` | 策略路由规则 |
+| `ip_neigh.txt` | ARP/邻居表状态 |
+| `arp_table_status.txt` | ARP 表条目统计与上限配置 |
+| `mac_duplicate_check.txt` | 本机 MAC 重复检查 |
+| `ip_conflict_check.txt` | IP 冲突检测结果（由独立脚本生成，见1.2节） |
+| `firewall_iptables.txt` | iptables 规则及命中计数 |
+| `firewall_nft.txt` | nftables 规则 |
+| `conntrack_status.txt` | conntrack 条目统计与上限配置 |
+| `mtu_status.txt` | MTU 配置与路径探测 |
+| `dns_resolv_conf.txt` | DNS 配置 |
+| `dns_nsswitch.txt` | 解析链路配置 |
+| `dmesg_log.txt` | 内核日志（支持时间窗口筛选） |
+| `journal_kernel.txt` | 内核日志（journalctl，支持时间窗口筛选） |
+| `journal_system_window.txt` | 指定时间段的系统日志（仅历史故障诊断时生成） |
 
-```bash
-nstat -az | grep -i "drop\|error\|overflow"
-cat /proc/net/softnet_stat            # 软中断丢包
-dropwatch -l kas                      # 实时追踪内核丢包点
-```
+> **检查点**：在进入 2.2 前，必须输出以下确认信息：
+>
+> ```
+> ✅ 已完成读取的文件（共 N/18）：
+>   [x] ip_link_stats.txt
+>   [x] iface_<iface>_details.txt
+>   [x] ip_addr.txt
+>   ... (列出所有文件)
+>
+> ❌ 缺失或读取失败的文件：
+>   [列出缺失文件及原因]
+> ```
+>
+> 若任何必读文件缺失且无法补救，必须在报告中明确标注"诊断不完整"。
 
-#### 应用级丢包
+#### 2.2 回答关键问题（综合所有证据）
 
-```bash
-cat /proc/net/snmp | grep Udp         # 关注RcvbufErrors
-sysctl net.core.rmem_max net.core.wmem_max
-sysctl -w net.core.rmem_max=16777216  # 增大缓冲区
-```
+**注意**：此步骤必须在第一步完全完成后才能开始。根据场景类型，检查范围有所不同：
 
-#### 丢包诊断决策
+**【场景A：指定网口】检查范围**：
+- 接口状态：聚焦目标接口
+- IP冲突：检查目标接口IP是否冲突
+- 路由：检查与目标接口相关的路由
+- 防火墙：检查与目标接口相关的规则
 
-```
-ifconfig/ethtool -S 有错误增长？ → 网卡级丢包
-/proc/net/snmp 有丢包增长？     → 内核栈丢包
-ss -s 显示溢出？                → 应用级丢包
-tcpdump两端对比？               → 中间设备丢包
-```
+**【场景B：整机异常】检查范围**：
+- 接口状态：检查所有UP的接口
+- IP冲突：检查**所有接口IP**是否冲突
+- 路由：检查所有路由表（包括策略路由）
+- 防火墙：检查所有规则
+
+**具体检查项**：
+
+- **接口是否异常**：
+  - 场景A：目标接口是否 `DOWN/NO-CARRIER`、丢包/错误计数是否异常增长
+  - 场景B：所有UP接口是否异常，逐一排查
+
+- **路由是否异常**：是否缺少默认路由/关键网段路由，是否存在黑洞路由或错误掩码（`ip_route_main.txt`、`ip_route_all.txt`、`ip_rule.txt`）。
+
+- **邻居/ARP 是否异常**：是否存在邻居表异常、网关 MAC 抖动迹象（`ip_neigh.txt`）。
+
+- **ARP 表是否满载**：检查 `arp_table_status.txt`，关注使用率是否超过 90%，可能导致新连接无法建立（FM_NET_003）。
+  > ⚠️ **【强制要求】ARP 表满与指定网口的关联分析** ⚠️>
+  >
+  > **当用户指定了某个网口有问题时，必须分析 ARP 表满是否影响了该网口：**
+  >
+  > **关键分析逻辑**：
+  > 1. 检查指定网口的 RX dropped 计数是否异常增长
+  > 2. 检查 ARP 表使用率是否超过上限（gc_thresh3）
+  > 3. **建立因果链**：ARP 表满 → 无法创建新 ARP 条目 → 无法处理入站流量（无法解析源 MAC）→ 内核丢弃数据包 → RX dropped 增加
+  >
+  > **判断标准**：
+  > - ARP 表使用率 ≥ 90% 且指定网口有大量 RX dropped → **高度可疑**，ARP 表满是根因
+  > - ARP 表满但指定网口无丢包 → 可能是潜在风险，需进一步分析
+  > - ARP 表未满但指定网口有丢包 → 排除 ARP 表问题，查找其他原因
+  >
+  > **场景A 特别注意**：
+  > - 即使用户指定的网口没有配置 IP 地址，ARP 表满也可能导致该网口无法正常处理二层流量
+  > - 必须解释指定网口的问题，不能因为"该网口无 IP"就忽略它
+  >
+  > **错误示例**：
+  > - 用户说"enp4s0不通" → 发现 enp4s0 无 IP → 转向分析 enp3s0 ❌
+  > - 用户说"enp4s0不通" → 发现 ARP 表满但 enp4s0 有大量 dropped → 结论是"外网不通" ❌
+  >
+  > **正确示例**：
+  > - 用户说"enp4s0不通" → 发现 enp4s0 有 356190 RX dropped + ARP 表满（195%）→ 结论是"enp4s0 因 ARP 表满导致入站丢包" ✅
+
+- **本机是否存在重复 MAC**：查看 `mac_duplicate_check.txt` 是否出现 `DUP_MAC <mac> <iface...>`。
+  > ⚠️ **强制检查项**：此检查不可跳过，必须在报告中明确说明结果。
+
+- **本机 IP 是否冲突**：
+  - 场景A：查看 `ip_conflict_check.txt`，检查目标接口IP是否冲突
+  - 场景B：查看 `ip_conflict_check.txt`，检查**所有接口IP**是否冲突
+  > ⚠️ **强制检查项**：场景B必须检查所有接口的IP冲突，不可仅检查用户提到的IP。
+  > 例如：用户说"76.53.183.189某个网口断网"，需检查该服务器**所有网口**的IP冲突情况，而非仅检查76.53.183.189。
+  - `✅ 结论: 无 IP 冲突` - 正常
+  - `❌ 结论: 存在 IP 冲突` - 需要处理，脚本会列出冲突 IP 和冲突设备 MAC
+
+- **防火墙是否丢包**：检查 `firewall_iptables.txt` 和 `firewall_nft.txt`，**必须看到实际的 `DROP/REJECT` 规则且 `pkts > 0` 才能判定防火墙阻止了流量**。详细解读方法参考 [防火墙规则解读指南](references/firewall-guide.md)。
+
+- **conntrack 是否异常**：检查 `conntrack_status.txt`，关注使用率是否超过 90%，可能导致新连接无法建立（FM_NET_007）。
+
+- **MTU 是否匹配**：检查 `mtu_status.txt`，关注各接口 MTU 配置及路径探测结果，小包通大包不通提示 MTU 问题（FM_NET_006）。
+
+- **DNS 是否明显错误**：`/etc/resolv.conf` 是否异常、解析链路配置是否可疑（`dns_resolv_conf.txt`、`dns_nsswitch.txt`）。
+
+- **内核日志是否有关键告警**：是否出现网卡/驱动/邻居表/conntrack 等关键报错（`dmesg_log.txt`、`journal_kernel.txt`）。
+  
+  > ⚠️ **【强制要求】时间窗口过滤** ⚠️
+  > 
+  > **必须只关注故障时间窗口内的日志记录**，排除历史告警干扰。
+  > 
+  > **判断方法**：
+  > 1. 日志时间戳必须在 `[故障时间窗口开始, 故障时间窗口结束]` 范围内
+  > 2. 超出时间窗口的告警应标记为"历史告警"，不纳入当前诊断结论
+  > 
+  > **示例**：
+  > ```
+  > 故障时间窗口: 2026-03-23 10:00 - 2026-03-23 10:30
+  > 
+  > [2026-03-20 15:30:00] nf_conntrack: table full, dropping packet
+  > → ❌ 历史告警（早于故障时间窗口），忽略
+  > 
+  > [2026-03-23 10:15:00] nf_conntrack: table full, dropping packet
+  > → ✅ 故障时间窗口内，纳入分析
+  > ```
+
+#### 2.3 交叉验证
+
+> **目标**：通过不同来源的数据相互佐证，确保结论的准确性，避免单一证据导致的误判。
+
+**交叉验证原则**：
+
+1. **证据链闭环**：推断的故障原因必须能在多个相关数据源中找到对应痕迹。
+   - 例如：声称"防火墙阻止流量" → 必须在 `firewall_iptables.txt` 或 `firewall_nft.txt` 中看到实际的 `DROP/REJECT` 规则且 `pkts > 0`
+   - 例如：声称"IP 冲突" → 必须确认响应 MAC 不属于本机任何接口
+
+2. **矛盾证据优先**：当不同数据源的结论存在矛盾时，**矛盾证据比支持证据更值得关注**，需重新审视假设。
+
+3. **排除干扰项**：确认所谓的"异常"是否为：
+   - 历史遗留告警（时间戳早于故障时间窗口）
+   - 已知的不影响业务的误报
+   - 多接口同网段的正常现象（如 ARP 响应）
+   - **当前状态已恢复**（如 conntrack 当前使用率正常，但日志中有历史"table full"记录）
+
+4. **时间窗口一致性验证**：
+   - 日志告警时间 vs 故障时间窗口：告警是否发生在故障期间？
+   - 当前状态 vs 日志记录：当前正常但日志有告警 → 可能是历史问题已恢复
+   - **示例**：`conntrack_status.txt` 显示使用率 0%，但 `dmesg_log.txt` 有 "table full" → 检查日志时间戳是否在故障时间窗口内，若不在则忽略
+
+5. **数据源交叉引用**：
+   | 判断类型 | 必须交叉验证的数据源 |
+   |---------|-------------------|
+   | IP 冲突 | `ip_conflict_check.txt` ↔ `ip_addr.txt`（MAC 地址比对） |
+   | 防火墙阻止 | `firewall_iptables.txt` ↔ `firewall_nft.txt`（规则存在性验证） |
+   | 路由问题 | `ip_route_main.txt` ↔ `route_get_<dest>.txt`（实际路径验证） |
+   | ARP 异常 | `ip_neigh.txt` ↔ `ip_addr.txt`（网关 MAC 与本机接口 MAC 比对） |
+   | ARP 表满 | `arp_table_status.txt` ↔ `dmesg_log.txt`（使用率验证 + 内核日志确认） |
+   | conntrack 满 | `conntrack_status.txt` ↔ `dmesg_log.txt`（使用率验证 + 内核日志确认） |
+   | MTU 问题 | `mtu_status.txt` ↔ `ping_<dest>.txt`（路径探测 + 连通性对比） |
+
+#### 2.4 综合判断并进入分支收敛
+
+完成所有快照文件的分析和交叉验证后，根据发现的异常信号，选择进入分支收敛阶段的相应分支继续诊断。
+
+> ✅ **Phase 2 完成检查点**：在进入 Phase 3 前，必须确认以下条件全部满足：
+> - [ ] 已读取所有必读快照文件（18个文件）
+> - [ ] 已回答所有关键问题（接口、路由、ARP、IP冲突、防火墙等）
+> - [ ] 已完成交叉验证
+> - [ ] 已确定异常信号类型，明确需要进入哪个分支
+>
+> **禁止行为**：
+> - ❌ 在未完成所有文件读取前，不得输出任何诊断结论
+> - ❌ 在未完成交叉验证前，不得确定故障原因
+>
+> **若以上任一条件未满足，禁止进入 Phase 3。**
 
 ---
 
-### 2.3 TCP连接异常
+### 3. 分支收敛 (Phase 3: Branch Convergence)
 
-#### 连接超时（SYN_SENT堆积）
+**目标**：根据综合分析阶段的异常信号，选择相应的网络层级分支进行深入排查。每个分支只执行少量高价值检查，避免"全网体检"。
 
-```bash
-ss -tn state syn-sent                              # 查看堆积的SYN
-tcpdump -i eth0 "tcp[tcpflags] & tcp-syn != 0" -nn # 确认SYN已发出
-sysctl net.ipv4.tcp_syn_retries                     # 默认6次≈127秒超时
-```
+#### 3.1 L1-L2 分支：物理链路 / MAC / ARP / VLAN
 
-#### 连接重置（RST分析）
+**适用场景：**
 
-| RST场景 | 特征 | 排查方向 |
-|----------|------|----------|
-| 端口未监听 | 收到SYN后立即RST | 检查服务是否运行 |
-| 防火墙REJECT | 有规律的RST | 检查iptables REJECT规则 |
-| 应用close | FIN之后RST | 检查应用日志 |
-| 资源限制 | accept队列满后RST | 检查somaxconn |
+- 目标接口错误/丢包计数异常增加；  
+- 近期存在 `NIC Up/Down` 日志；  
+- 无法 ARP 到网关或同网段主机。
 
-```bash
-tcpdump -i eth0 "tcp[tcpflags] & tcp-rst != 0" -nn -c 100
-nstat -az | grep -i rst
-```
+**建议检查：**
 
-#### 半连接与全连接队列
+- `ethtool <app_iface>`：查看速率、双工、链路是否稳定。  
+- `ip neigh show` / `ip neigh get <gw>`：观察网关 ARP 是否存在抖动或解析失败。  
+- ARP 表状态：查看 `arp_table_status.txt`，确认使用率是否接近上限（≥90% 为危险阈值）。
+- 全局检查本机重复 MAC：查看 `mac_duplicate_check.txt`（或现场执行 `ip -o link` 聚合），确认是否存在两个接口使用同一 MAC。  
+- VLAN 场景：  
+  - `cat /proc/net/vlan/config`  
+  - `ip -d link show <vlan_iface>`：确认 VLAN ID 与计划一致。
 
-```bash
-sysctl net.ipv4.tcp_max_syn_backlog     # SYN队列（半连接）
-nstat -az TcpExtListenOverflows TcpExtListenDrops
-sysctl net.ipv4.tcp_syncookies          # SYN Cookie防御（1=启用）
-ss -tlnp                               # Recv-Q=积压, Send-Q=上限
-```
+**潜在结论：**
 
-#### TIME_WAIT过多
+- 物理链路故障或抖动；  
+- MAC/IP 冲突；  
+- ARP/邻居表溢出（FM_NET_003）；  
+- VLAN ID/Trunk/Access 端口配置错误。
 
-```bash
-ss -tan state time-wait | wc -l
-ss -tan state time-wait | awk '{print $4}' | sort | uniq -c | sort -rn | head
-sysctl -w net.ipv4.tcp_tw_reuse=1           # 允许复用
-sysctl -w net.ipv4.tcp_max_tw_buckets=50000 # 最大数量
-```
+#### 3.2 L3 分支：路由 / 多出口 / 策略路由
 
----
+**适用场景：**
 
-### 2.4 网络延迟
+- 只影响部分网段或外部网络；  
+- 存在策略路由、多路由表或多出口。
 
-#### 延迟测量
+**建议检查：**
 
-| 工具 | 用途 | 命令示例 |
-|------|------|----------|
-| ping | 基本延迟 | `ping -c 100 -i 0.1 <IP>` |
-| mtr | 逐跳分析 | `mtr -rn -c 100 <IP>` |
-| hping3 | TCP延迟 | `hping3 -S -p 80 <IP>` |
-| tcpdump | 精确分析 | 抓包后Wireshark分析 |
+- `ip rule show`：是否存在策略路由规则。  
+- `ip route show table all`：检查是否配置错误/黑洞路由。  
+- 对关键目标执行 `ip route get <dest_ip>`：确认实际出接口和下一跳是否合理。
 
-#### 延迟定位
+#### 3.3 DNS 分支：解析故障或延迟
 
-| 延迟位置 | 判断方法 | 常见原因 |
-|----------|----------|----------|
-| 网络延迟 | ping/mtr逐跳 | 链路质量、路由绕行、拥塞 |
-| 内核延迟 | 软中断/调度延迟 | CPU饱和、中断不均衡 |
-| 应用延迟 | strace/perf | 锁竞争、IO等待 |
+**适用场景：**
 
-#### TCP重传分析
+- “域名访问慢/失败，但 IP 访问相对正常”。
 
-```bash
-nstat -az TcpRetransSegs TcpExtTCPSlowStartRetrans TcpExtTCPFastRetrans
-ss -ti dst <目标IP>                   # 关注retrans:和rto:字段
-watch -d "nstat -az | grep -i retrans"
-```
+**建议检查：**
 
----
+- 使用 `dig` 或 `nslookup`：
+  - 比较 `dig <domain>` 与 `dig @<nameserver> <domain>` 的解析时延和结果；  
+  - 分别对多个 nameserver 进行测试。
 
-### 2.5 网卡/驱动问题
+#### 3.4 L4 分支：端口 / 防火墙 / conntrack
 
-#### 网卡错误诊断
+**适用场景：**
 
-| 错误类型 | ethtool指标 | 可能原因 |
-|----------|-------------|----------|
-| CRC错误 | rx_crc_errors | 线缆/电磁干扰 |
-| 帧错误 | rx_frame_errors | 双工不匹配 |
-| FIFO溢出 | rx_fifo_errors | Ring Buffer太小 |
-| 载波错误 | tx_carrier_errors | 物理链路问题 |
+- `ping` 正常但端口连接不通或不稳定；  
+- 连接状态中，`SYN-RECV` 异常偏多。
 
-```bash
-ethtool eth0                          # Speed, Duplex, Link
-ethtool -i eth0                       # 驱动信息
-ethtool -t eth0 online                # 网卡自检
-ethtool -k eth0                       # 特性列表
-```
+**建议检查：**
 
-#### 中断问题
+- `nc -zv <target_ip> <port>`：本机对端口的连通性。  
+- `ss -lntp`：确认服务是否监听在业务 IP 上。  
+- `iptables -L -n -v` / `nft list ruleset`：检查是否有规则大量命中。  
+- `conntrack -L | wc -l` 或日志：判断连接跟踪是否达到上限。
 
-```bash
-grep eth0 /proc/interrupts            # 中断分布
-cat /proc/net/softnet_stat            # 第2列=time_squeeze
-cat /sys/class/net/eth0/queues/rx-*/rps_cpus  # RPS配置
-echo <cpu_mask> > /proc/irq/<irq>/smp_affinity # 设置亲和性
-```
+#### 3.5 MTU / 性能分支：大包问题与时延
 
-#### 驱动问题
+**适用场景：**
 
-```bash
-ethtool -i eth0                       # driver, version
-dmesg | grep -i -E "eth0|<驱动名>"
-modprobe -r <驱动> && modprobe <驱动>  # 重加载
-dmesg | grep -i firmware              # 固件问题
-```
+- 小包通信正常，文件传输/HTTPS 等大包或长连接不稳定。
+
+**建议检查：**
+
+- `ping -M do -s <size> <dest_ip>`：递增数据包大小，查找最大无分片包。  
+- 检查 `ip link show <app_iface>` 和上游设备的 MTU 设置。
+
+> ✅ **Phase 3 完成检查点**：在进入 Phase 4 前，必须确认以下条件全部满足：
+> - [ ] 已根据 Phase 2 的异常信号选择正确的分支
+> - [ ] 已执行分支内的建议检查
+> - [ ] 已定位到具体的故障层级（L1/L2/L3/L4/MTU等）
+> - [ ] 已形成初步的故障假设
+>
+> **若以上任一条件未满足，禁止进入 Phase 4。**
 
 ---
 
-### 2.6 虚拟网络问题
+### 4. 根因定位 (Phase 4: Root Cause Analysis)
 
-#### Linux Bridge
+**目标**：针对已识别的故障类型，执行精细化的路径探测与时序分析，生成标准化的故障报告。
 
-```bash
-brctl show                            # Bridge信息
-bridge fdb show br br0                # FDB表
-brctl showstp br0                     # STP状态
-sysctl net.bridge.bridge-nf-call-iptables  # 1则流量经过iptables
+> ⚠️ **重要**：只有在完成 Phase 1-3 后才能进入此阶段。**禁止在未完成前三个阶段的情况下直接输出故障报告。**
+
+当问题层级和大类清晰后，进入第四阶段，重点是：
+
+1. **验证当前假设**：通过更多证据支持或推翻已形成的判断。  
+2. **重建因果与时间链**：弄清楚"为什么出问题、如何演变、影响到哪里"。  
+3. **形成标准化故障报告**，便于复盘和经验沉淀。
+
+#### 4.1 深入分析动作
+
+可根据情况选择部分操作，例如：
+
+- 使用 `mtr --report <target>` 或 `traceroute` 分析哪一跳开始丢包/时延激增。  
+- 使用 `curl -Iv <URL>` 分解 DNS/TCP/TLS/应用耗时。  
+- 在其他同网段/同机房机器上做相同测试，判断是否为“单机问题”。  
+- 拉取更长时间窗口日志，分析是否存在"预兆"或渐进式恶化。
+
+#### 4.2 故障报告模板
+
+在完成分析后，故障报告请统一按以下最终格式输出：
+
+## 1. 总结
+
+| 项目 | 内容 |
+| ---- | ---- |
+| 故障时间窗口 | <故障发生的开始时间 - 结束时间> |
+| 诊断执行时间 | <执行诊断的时间点> |
+| 影响范围 | <受影响服务/功能/用户范围> |
+| 根因 | <一句话根因结论> |
+| 等级 | <严重/高/中/低> |
+
+## 2. 故障路径分析
+
+使用单行路径链路描述：
+
+```text
+<节点A> -> <中间故障节点> -> <上游影响> -> <用户侧影响>
 ```
 
-#### veth pair
+并补充三项说明：
 
-```bash
-ethtool -S <veth名称>                  # peer_ifindex→对端index
-ip link show | grep "^<index>:"       # 根据index找对端
-ip netns exec <ns> ip link show       # 命名空间中查找
-```
+- **触发点**：最初触发故障的关键事件/配置/资源瓶颈。  
+- **核心节点**：造成故障放大的中间节点（例如连接池耗尽、路由黑洞、接口 flap）。  
+- **最终影响**：用户或业务最终可见的异常。  
 
-#### VXLAN/GRE隧道
 
-```bash
-ip -d link show type vxlan
-bridge fdb show dev vxlan0
-ip tunnel show
-# MTU注意：VXLAN开销50B，GRE开销24-28B
-tcpdump -i eth0 "udp port 4789" -nn   # 抓VXLAN
-tcpdump -i eth0 "proto gre" -nn       # 抓GRE
-```
+## 3. 故障排查过程
 
-#### OVS / 容器网络
+按时间顺序列出排查步骤，建议 3~6 步，每步包含：
 
-```bash
-# OVS
-ovs-vsctl show
-ovs-ofctl dump-flows br-int
-ovs-appctl ofproto/trace br-int <匹配>
+1. 执行了什么检查（命令/脚本/日志来源）  
+2. 看到了什么关键现象  
+3. 由此得出的阶段性判断
 
-# 容器网络
-nsenter -t <PID> -n ip addr show
-nsenter -t <PID> -n ip route show
-iptables -t nat -L -n -v              # NAT规则
-```
+示例结构：
+
+1. 收集用户反馈与系统日志，确认故障时间段。  
+2. 检查连接状态与路由，发现关键异常信号。  
+3. 结合综合分析/分支收敛证据，定位核心故障节点。  
+4. 回溯配置/容量/时序，确认根因。  
+
+## 4. 修复建议
+
+> ⚠️ **【强制要求】修复建议输出规范** ⚠️
+>
+> **Agent 只能提供修复建议，严禁自动执行任何修复命令。所有建议必须遵循以下格式：**
+>
+> ### 4.1 风险等级定义
+>
+> | 等级 | 标识 | 说明 | 示例操作 |
+> | ---- | ---- | ---- | -------- |
+> | 高危 | 🔴 | 可能导致服务中断、数据丢失、系统不稳定 | 重启网络服务、修改核心路由、关闭防火墙、修改内核参数 |
+> | 中危 | 🟡 | 可能影响部分服务或需要谨慎评估 | 修改单条防火墙规则、添加静态路由、修改 DNS 配置 |
+> | 低危 | 🟢 | 风险较低，通常可安全执行 | 查看配置、清理过期连接、调整非关键参数 |
+>
+> ### 4.2 修复建议输出格式（强制）
+>
+> 每条修复建议必须包含以下要素：
+>
+> ```text
+> **建议 N：<简短描述>**
+> - 风险等级：🔴/🟡/🟢 <等级文字>
+> - 风险提示：<具体风险说明>
+> - 操作命令：<建议执行的命令>
+> - 回滚方案：<高危操作必须提供>（仅高危操作必填）
+> - 执行前提：<执行前需要确认的条件>
+> ```
+>
+> ### 4.3 高危操作特别说明
+>
+> 以下操作属于 **🔴 高危操作**，必须在建议中：
+> 1. 明确标注"高危"标识
+> 2. 详细说明可能导致的影响
+> 3. 提供完整的回滚方案
+> 4. 建议在业务低峰期执行
+> 5. 建议提前通知相关方
+>
+> **常见高危操作清单**：
+> - `systemctl restart network` / `systemctl restart networking` - 重启网络服务
+> - `ip link set <iface> down/up` - 关闭/开启网卡
+> - `iptables -F` / `nft flush ruleset` - 清空防火墙规则
+> - `ip route flush` / `ip route del default` - 删除路由
+> - `sysctl -w net.ipv4.ip_forward=0` - 关闭 IP 转发
+> - 修改 `/etc/sysconfig/network-scripts/` 下的配置文件
+> - 修改 `/etc/netplan/` 下的配置文件
+> - `nmcli connection down/up` - NetworkManager 连接操作
+
+分三层给出建议：
+
+### 4.4 立即修复建议
+
+用于快速止血与恢复服务，按风险等级排序输出：
+
+**示例格式：**
+
+> **建议 1：临时添加静态路由恢复连通性**
+> - 风险等级：🟡 中危
+> - 风险提示：路由配置错误可能导致流量走向异常，建议先在测试环境验证
+> - 操作命令：`ip route add <目标网段> via <网关IP> dev <接口>`
+> - 执行前提：确认网关 IP 可达、接口状态正常
+> - 回滚方案：`ip route del <目标网段> via <网关IP> dev <接口>`
+
+### 4.5 根本解决建议
+
+针对根因的配置/架构/容量优化：
+
+**示例格式：**
+
+> **建议 2：修复持久化路由配置**
+> - 风险等级：🔴 高危
+> - 风险提示：修改网络配置文件后需重启网络服务，可能导致短暂的服务中断
+> - 操作命令：
+>   1. 编辑 `/etc/sysconfig/network-scripts/route-<iface>` 添加路由
+>   2. 执行 `systemctl restart network` 使配置生效
+> - 执行前提：建议在业务低峰期执行，提前通知相关业务方
+> - 回滚方案：
+>   1. 恢复原配置文件：`cp /etc/sysconfig/network-scripts/route-<iface>.bak /etc/sysconfig/network-scripts/route-<iface>`
+>   2. 重启网络服务：`systemctl restart network`
+
+### 4.6 预防措施建议
+
+监控告警、巡检、压测、变更流程优化等防复发措施（通常为低危操作）：
+
+**示例格式：**
+
+> **建议 3：添加路由监控告警**
+> - 风险等级：🟢 低危
+> - 风险提示：无显著风险
+> - 操作命令：配置监控系统添加路由表变化告警规则
+> - 执行前提：确认监控系统支持自定义告警规则  
 
 ---
 
-### 2.7 防火墙规则分析
+## 附录：常用深入诊断命令
 
-#### iptables
+> 本附录列出在根因定位阶段常用的深入排查命令，按层级分类，供需要"多走一步"时快速查阅。实际使用时，可结合现场环境和权限选择执行。
 
-```bash
-iptables -L -n -v --line-numbers
-iptables -t nat -L -n -v --line-numbers
-iptables-save > iptables_backup.txt
+### A.1 L1-L2 深入：链路 / MAC / ARP / VLAN
 
-# TRACE调试
-iptables -t raw -A PREROUTING -s <源IP> -j TRACE
-dmesg | grep TRACE
-```
+- **更长时间窗口日志**  
+  - `dmesg` / `journalctl -k`  
+    - 链路 Up/Down 是否与报障时间吻合？
+- **多点对比**  
+  - 在同 VLAN 其他主机上执行 `ping` / `arp` / `mtr`，对比“单机 vs 整段 VLAN 问题”。  
+- **针对性验证**  
+  - `arping -D -I <app_iface> <ip>`：检测 IP 冲突；  
+  - 反复执行 `ip neigh get <gw>`：观察 MAC 是否抖动；  
+  - VLAN ID 与交换机配置对齐（需要配合网络侧信息确认）。
 
-**规则匹配流程**：
-```
-入站: PREROUTING(raw→mangle→nat) → 路由 → INPUT(mangle→filter)
-转发: PREROUTING → 路由 → FORWARD(mangle→filter) → POSTROUTING(mangle→nat)
-出站: OUTPUT(raw→mangle→nat→filter) → 路由 → POSTROUTING(mangle→nat)
-```
+### A.2 L3 深入：路由 / 策略路由 / 回程路径
 
-#### nftables / firewalld
+- **可达性矩阵**  
+  - 选取若干关键目标（如数据库、外网、跨机房 IP），分别执行：  
+    - `ip route get <dest>`  
+    - `ping <dest>`  
+- **策略路由模拟**  
+  - 若存在 `ip rule`，使用不同源 IP/mark 多次执行 `ip route get <dest>` 验证策略行为。  
+- **路径对称性检查**  
+  - 若用户提供对端信息，让对端执行相反方向的 `ip route get <src>` / `ping <src>`，判断回程路径是否不对称。
 
-```bash
-nft list ruleset                      # 所有规则
-nft list ruleset -a                   # 含handle编号
+### A.3 L3.5 / L4-L7 深入：路径质量 / MTU / 应用分层
 
-firewall-cmd --state
-firewall-cmd --list-all
-firewall-cmd --add-port=<端口>/tcp    # 临时开放
-```
-
-#### conntrack表满
-
-| 指标 | 命令 | 说明 |
-|------|------|------|
-| 当前连接数 | `conntrack -C` | 已跟踪连接 |
-| 最大值 | `sysctl net.netfilter.nf_conntrack_max` | 表容量上限 |
-| 丢弃统计 | `conntrack -S` | 关注drop计数 |
-
-```bash
-sysctl -w net.netfilter.nf_conntrack_max=1048576
-echo 262144 > /sys/module/nf_conntrack/parameters/hashsize
-sysctl -w net.netfilter.nf_conntrack_tcp_timeout_established=3600
-sysctl -w net.netfilter.nf_conntrack_tcp_timeout_time_wait=30
-```
+- **路由与路径质量**  
+  - `mtr --report <target>`：找出从哪一跳开始丢包/RTT 抖动。  
+- **MTU / 分片探测**  
+  - 系统性使用 `ping -M do -s <size>` 逐步探测最大无分片包。  
+- **TCP/TLS/HTTP 分解**  
+  - `curl -Iv <url>`：拆解 DNS、TCP 建连、TLS 握手、首字节时间（TTFB），区分“网络慢”还是“应用慢”。  
+- **服务端深入**  
+  - `ss -lntp`：监听 IP/端口是否正确；  
+  - 结合应用/Nginx/中间件日志，看 4xx/5xx/超时/限流等模式是否与网络现象对应。
 
 ---
 
-## 3. 诊断工具详解
-
-| 工具 | 用途 | 常用命令 |
-|------|------|----------|
-| ip | 网络配置 | `ip addr`, `ip route`, `ip link`, `ip neigh` |
-| ss | Socket统计 | `ss -tlnp`, `ss -tanp`, `ss -ti`, `ss -s` |
-| tcpdump | 抓包分析 | `tcpdump -i eth0 -nn -w capture.pcap` |
-| ethtool | 网卡诊断 | `ethtool eth0`, `ethtool -S eth0`, `ethtool -i eth0` |
-| iperf3 | 带宽测试 | `iperf3 -s` / `iperf3 -c <IP>` |
-| mtr | 路径延迟 | `mtr -rn -c 100 <IP>` |
-| nstat | 协议统计 | `nstat -az` |
-| conntrack | 连接跟踪 | `conntrack -L`, `conntrack -C`, `conntrack -S` |
-| dropwatch | 丢包追踪 | `dropwatch -l kas` |
-
-### tcpdump常用过滤器
-
-```bash
-tcpdump -i eth0 host 10.0.0.1 -nn                         # 按主机
-tcpdump -i eth0 port 80 -nn                                # 按端口
-tcpdump -i eth0 "tcp[tcpflags] & tcp-syn != 0" -nn        # SYN包
-tcpdump -i eth0 "tcp[tcpflags] & tcp-rst != 0" -nn        # RST包
-tcpdump -i eth0 "greater 1400" -nn                         # 大包
-tcpdump -i eth0 -w capture.pcap -c 10000                   # 保存
-```
-
-### ss命令详解
-
-```bash
-ss -tanp                              # 所有TCP连接
-ss -tn state established              # 按状态过滤
-ss -tn dst 10.0.0.1                   # 按目标过滤
-ss -ti                                # TCP内部信息（RTT/窗口/拥塞）
-ss -s                                 # 统计摘要
-```
-
----
-
-## 4. 诊断流程（分层法）
-
-| 层级 | 检查项 | 命令 | 异常表现 |
-|------|--------|------|----------|
-| 物理层 | 链路状态 | `ethtool eth0` | Link detected: no |
-| 物理层 | 速率双工 | `ethtool eth0` | Speed/Duplex不匹配 |
-| 物理层 | 网卡识别 | `lspci \| grep -i net` | 网卡未识别 |
-| 链路层 | 接口状态 | `ip link show` | state DOWN |
-| 链路层 | ARP表 | `ip neigh show` | FAILED/INCOMPLETE |
-| 链路层 | VLAN | `ip -d link show` | VLAN未配置/ID错误 |
-| 网络层 | IP地址 | `ip addr show` | 无IP/IP冲突 |
-| 网络层 | 路由 | `ip route show` | 缺少路由 |
-| 网络层 | ICMP | `ping <目标>` | 超时/不可达 |
-| 网络层 | 防火墙 | `iptables -L -n` | DROP/REJECT规则 |
-| 传输层 | 端口监听 | `ss -tlnp` | 端口未监听 |
-| 传输层 | 连接状态 | `ss -tanp` | 异常状态堆积 |
-| 传输层 | 重传 | `nstat -az` | 重传计数增长 |
-| 应用层 | 服务状态 | `systemctl status <服务>` | 未运行 |
-| 应用层 | DNS | `dig <域名>` | 解析失败 |
-| 应用层 | HTTP | `curl -v <URL>` | 非2xx响应 |
-
----
-
-## 5. 常见案例
-
-### 案例1: iptables DROP规则导致服务不可达
-
-**现象**：外部无法访问80端口，本地curl正常。
-
-```bash
-ss -tlnp | grep :80                   # 服务在监听
-curl http://127.0.0.1:80              # 本地正常
-iptables -L INPUT -n -v --line-numbers
-# 发现默认DROP规则阻断所有入站流量
-iptables -I INPUT 2 -p tcp --dport 80 -j ACCEPT  # 修复
-```
-
-**根因**：默认DROP规则阻断所有入站流量，应在DROP前添加特定端口ACCEPT。
-
-### 案例2: conntrack表满导致新连接失败
-
-**现象**：间歇性无法建立新连接，已有连接不受影响。
-
-```bash
-dmesg | grep conntrack                # "table full, dropping packet"
-conntrack -C                          # 65535（已满）
-sysctl net.netfilter.nf_conntrack_max # 65536
-# 修复
-sysctl -w net.netfilter.nf_conntrack_max=262144
-echo 65536 > /sys/module/nf_conntrack/parameters/hashsize
-```
-
-**根因**：高并发场景下conntrack默认值（65536）不足。
-
-### 案例3: MTU不匹配导致大包丢失
-
-**现象**：ping小包正常，大包或传文件时超时。
-
-```bash
-ping -c 5 -s 1472 -M do <目标IP>
-# "Frag needed and DF set (mtu = 1400)"
-tracepath <目标IP>                    # 显示路径MTU
-ip link set eth0 mtu 1400            # 修复
-sysctl net.ipv4.ip_no_pmtu_disc      # 确保=0（启用PMTUD）
-```
-
-**根因**：中间链路（VPN/隧道）MTU<1500，大包丢弃且ICMP报文被防火墙过滤。
-
-### 案例4: ARP表溢出导致网络不通
-
-**现象**：大二层网络中部分主机间歇性不通。
-
-```bash
-dmesg | grep "neighbour table overflow"
-ip neigh show | wc -l                 # 条目过多
-sysctl net.ipv4.neigh.default.gc_thresh3  # 默认1024
-# 修复
-sysctl -w net.ipv4.neigh.default.gc_thresh1=4096
-sysctl -w net.ipv4.neigh.default.gc_thresh2=8192
-sysctl -w net.ipv4.neigh.default.gc_thresh3=16384
-```
-
-**根因**：ARP条目超过gc_thresh3限制，新ARP请求被丢弃。
-
----
-
-## 6. 预防与监控
-
-### 关键监控指标
-
-| 分类 | 监控指标 | 采集方式 | 告警阈值 |
-|------|----------|----------|----------|
-| 连通性 | 丢包率 | `ping` | > 1% |
-| 连通性 | 延迟 | `ping` | 超过基线2倍 |
-| 网卡 | 错误包数 | `ethtool -S` | 任何增长 |
-| 网卡 | 丢包数 | `ip -s link` | 任何增长 |
-| TCP | 重传率 | `/proc/net/snmp` | > 1% |
-| TCP | TIME_WAIT数 | `ss -s` | > 20000 |
-| conntrack | 表使用率 | `conntrack -C` | > 80% |
-| DNS | 解析延迟 | `dig` | > 100ms |
-| 带宽 | 利用率 | `sar -n DEV` | > 80% |
-
-### 网络基线采集
-
-| 基线项 | 采集命令 | 频率 |
-|--------|----------|------|
-| 延迟基线 | `ping -c 100 <关键节点>` | 每日 |
-| 带宽基线 | `iperf3 -c <对端> -t 30` | 每周 |
-| 连接数 | `ss -s` | 每小时 |
-| 路由快照 | `ip route show` | 每日 |
-| ARP表大小 | `ip neigh show \| wc -l` | 每小时 |
-| conntrack | `conntrack -C` | 每分钟 |
-| 网卡错误 | `ethtool -S <iface>` | 每5分钟 |
-| 防火墙快照 | `iptables-save` | 每日 |
+通过以上四步流程以及附录中的深入命令，本技能能帮助工程师系统化地排查网络故障，从"能否连通"一路深入到"具体哪一层、哪个组件、什么配置/事件导致问题"，并沉淀成标准化的根因分析报告，支持后续复盘与经验积累。

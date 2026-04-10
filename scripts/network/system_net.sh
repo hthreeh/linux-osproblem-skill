@@ -135,5 +135,30 @@ section "[DETAIL-3] 内核网络异常挂起排查 (dmesg 抽检)"
 cmd_info "dmesg" "检索 drop, martian, out of memory, syn_flood, time wait bucket"
 timeout 10 dmesg -T 2>/dev/null | grep -iE "NF_CONNTRACK.*full|ip_conntrack.*full|drop|martian|Possible SYN flooding|out of socket memory|TCP: time wait bucket table overflow" | tail -30 || echo "无异常网络底座告警日志。"
 
+section "[DETAIL-4] 原生全链路底账底单 (Raw Status for AI Analysis)"
+cmd_info "ip rule & ip route table all" "检查策略路由底账"
+timeout 5 ip rule show 2>/dev/null || echo "无 ip rule"
+echo ""
+timeout 5 ip route show table all 2>/dev/null || echo "无 ip route all"
+
+cmd_info "iptables / nftables" "检查防火墙链路屏蔽规则"
+if command -v iptables-save >/dev/null 2>&1; then
+    timeout 5 iptables-save 2>/dev/null | grep -v '^#' || echo "无法获取 iptables"
+fi
+if command -v nft >/dev/null 2>&1; then
+    timeout 5 nft list ruleset 2>/dev/null || true
+fi
+
+cmd_info "ethtool statistics" "网络接口硬件及驱动计数器抽检 (过滤0值)"
+if command -v ethtool >/dev/null 2>&1; then
+    for eth_if in $(timeout 5 ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -v lo || true); do
+        echo -e "\n--- $eth_if ---"
+        timeout 5 ethtool "$eth_if" 2>/dev/null | grep -iE "Speed|Duplex|Link detected" || true
+        timeout 5 ethtool -S "$eth_if" 2>/dev/null | grep -vE ": 0$|: 0 $|: 0\s*$" || true
+    done
+else
+    echo "未安装 ethtool，跳过硬件层底单收集"
+fi
+
 section "采集完成"
 echo "✅ 网络诊断已归档至: $OUTPUT_DIR"

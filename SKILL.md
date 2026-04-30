@@ -137,59 +137,146 @@ incident/
 - 用户给了路径参数时，必须传给脚本
 - 如果需要反复切换多个 `vmcore` 路径，可使用 `scripts/vmcore/crash_config.sh` 保存配置
 
-### A3. 最小基线命令
+### A3. 双轨并行分析模型
 
-所有 `vmcore` 分析先跑：
+**vmcore 分析和源码分析应同时进行，而非二选一。** 两条轨道相互独立推进，最终交叉比对以确认根因。
 
-```text
-crash> sys
-crash> log
-crash> bt
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    并行双轨分析模型                               │
+│                                                                 │
+│  轨道一：vmcore 分析（逆向）         轨道二：源码分析（正向）      │
+│  ─────────────────────────         ───────────────────────     │
+│  从崩溃快照出发，逆向推理            从函数调用链出发，正向追踪    │
+│                                                                 │
+│  回答：在哪里崩？崩溃时              回答：为什么崩？代码逻辑     │
+│        数据状态如何？                      上哪里有缺陷？        │
+│                                                                 │
+│            ↓                                   ↓                │
+│            └────────────── 交叉验证 ────────────┘                │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-然后根据场景分流：
+| | vmcore 轨道 | 源码轨道 |
+|--|------------|---------|
+| **优势** | 崩溃时的真实数据状态、精确崩溃地址、并发时序痕迹 | 完整因果模型、错误路径可见、并发竞态窗口可分析 |
+| **局限** | 只有结果快照，过程不可见 | 需要版本精确匹配；编译器优化可能改变代码结构 |
+| **典型盲区** | 错误处理路径遗漏、引用计数不配对 | Bit Flip 伪装的软件故障（源码逻辑完全正确）|
 
-- 场景 A：从 panic 症状倒推根因
-- 场景 B：忽略人为触发动作，聚焦用户真正想排查的卡死、性能、泄漏、网络等问题
+**何时两条轨道都必须做**：有源码时，两条轨道**必须同时进行**，最终通过交叉验证收敛到高置信度结论。
 
-### A4. 五类深挖方向
+**何时只能走 vmcore 轨道**：无源码时，仅走 vmcore 分析，但应明确标注分析局限性。
 
-在 `sys/log/bt` 之后，用上下文命令定向分流：
+### A4. 统一分析流程（6 步）
 
-```text
-crash> ps
-crash> bt -a
-crash> foreach bt
+> 执行约束：所有分析脚本的默认超时时间为 **3 分钟（180s）**。
+
+#### Step 1：启动（基线信息收集 + 分支推荐）
+
+运行：
+
+```bash
+bash scripts/vmcore/baseline_info.sh <vmcore> <vmlinux> [src_dir]
 ```
 
-根据迹象继续：
+记录输出中的四类关键信息：
 
-- 内存相关：`kmem -i`, `kmem -s`, `vm`
-- 锁/死锁：`ps | grep UN`, `bt <pid>`, `struct mutex <addr>`
-- 中断/定时器：`irq`, `timer`, `bt -a`
-- 文件系统/IO：`files`, `mount`, `dev`
-- 驱动/硬件：`mod`, `dev`, `sym <addr>`
+- 内核版本字符串
+- 崩溃位置（函数名、RIP 地址、偏移）
+- 调用栈（bt -f / bt -l 的链路）
+- 异常值线索（NULL/poison/越界偏移/锁告警/MCE/UE 等）
 
-### A5. 硬件 bit-flip 前置规则
+#### Step 2：故障类型定界（选择分支脚本）
 
-如果是未知越界地址导致的页故障、非法访问、`unable to handle kernel paging request` 等异常，且地址不是显然的 `NULL`：
+按 Step 1 输出推荐，执行对应分支脚本：
+
+```bash
+bash scripts/vmcore/branches/branch_X_xxx.sh <vmcore> <vmlinux> [src_dir]
+```
+
+分支脚本对应表：
+
+```
+崩溃信息
+  ├─ log 含 “NULL pointer dereference”            → branch_A_null_ptr.sh
+  ├─ log 含 “KASAN: slab-out-of-bounds”           → branch_B_oob.sh
+  ├─ log 含 “KASAN: use-after-free”               → branch_C_uaf.sh
+  ├─ log 含 “stack-protector”/”stack overflow”    → branch_D_stack_overflow.sh
+  ├─ log 含 “Machine check:” / MCE bank 转储      → branch_E_mce.sh
+  ├─ log 含 “EDAC” + “UE” 记录                    → branch_F_memory_ue.sh
+  ├─ log 含 “possible circular locking”           → branch_G_deadlock.sh
+  ├─ log 含 “soft lockup”                         → branch_H_soft_lockup.sh
+  ├─ log 含 “hard LOCKUP”                         → branch_I_hard_lockup.sh
+  ├─ log 含 “kernel BUG at”                       → branch_J_bug_trigger.sh
+  ├─ log 含 “Out of memory” / “oom_kill”          → branch_K_oom.sh
+  ├─ log 含 “sleeping function called from”       → branch_L_atomic_sleep.sh
+  ├─ log 含 “rcu_sched detected stalls”           → branch_M_rcu_stall.sh
+  ├─ log 含 “EXT4-fs error”/”XFS.*corruption”     → branch_N_fs_corruption.sh
+  ├─ log 含 “double free”/”skb”                   → branch_O_network.sh
+  ├─ log 含 “DMA mapping error”/”I/O timeout”     → branch_P_storage_io.sh
+  ├─ log 含 “vmx_”/”kvm_” + VMX exit reason       → branch_Q_kvm.sh
+  ├─ log 含 “acpi_”/”AE_BAD_ADDRESS”              → branch_R_acpi.sh
+  ├─ log 含 “migrate_pages”/”offline_pages”       → branch_S_hotplug.sh
+  ├─ bt 含 第三方 .ko 符号 + RIP落在模块地址段       → branch_T_driver.sh
+  ├─ CR4 SMEP/SMAP置位 + fault地址在用户态          → branch_U_smep_smap.sh
+  └─ 随机崩溃 + 软件证据链不完整 + 无法复现          → branch_V_bit_flip.sh
+```
+
+若 Step 1 输出推荐多个分支脚本，必须按输出顺序全部执行。
+
+#### Step 3：vmcore 逆向（回答”在哪里崩 + 崩溃时数据状态如何”）
+
+在分支脚本输出基础上，完成四步证据链：
+
+- V1 崩溃现场还原：确认 panic/oops 类型、精确 RIP、崩溃寄存器值
+- V2 调用栈重建：用 `bt -f` + `bt -l` 确认 #0 崩溃帧与完整调用链
+- V3 数据状态验证：用 `struct`/`kmem`/`rd` 读取关键结构体/指针/长度/引用计数
+- V4 独立归因：仅基于 vmcore 客观数据，给出”异常值是什么、首次出现在哪一帧、如何触发 #0”
+
+#### Step 4：源码正向（有源码时必做；回答”为什么崩 + 代码逻辑哪里有缺陷”）
+
+- S0 版本验证：对比 `dis -l` 输出的行号与源码内容是否吻合
+- S1 锚定入口：取崩溃帧函数名与 RIP，定位到精确源码行
+- S2 对齐确认：以汇编执行顺序为准理解源码语义，避免把编译器优化误当成逻辑缺陷
+- S3 调用栈逐帧追踪：从 #0 向上追溯至 #N，逐帧完成”找源码→验参数→判根因帧”
+- S4 数据流溯源：追踪异常值的”分配→正常→异常引入→传播→崩溃”全生命周期
+- S5 反事实验证：用源码根因假设正向推演，与 vmcore 现象逐条对齐
+
+源码分析缺陷模式速查：`references/vmcore/src_analysis_patterns.md`
+
+#### Step 5：交叉验证（双轨汇合，冲突仲裁）
+
+| 验证维度 | vmcore 结论 | 源码结论 | 是否吻合？ |
+|---------|------------|---------|-----------|
+| 崩溃位置 | RIP 在 `<func>+<offset>` | `<file>:<line>` 对应此偏移 | □ 吻合 □ 不符 |
+| 异常值 | 寄存器/内存读到 `<value>` | 源码在 `<条件>` 下产生此值 | □ 吻合 □ 不符 |
+| 调用路径 | bt 路径 A→B→C→崩溃 | 源码中 A→B→C 的调用存在 | □ 吻合 □ 不符 |
+| 根因帧 | `#N` 帧首次异常 | 对应函数存在缺陷 | □ 吻合 □ 不符 |
+
+仲裁原则：崩溃位置/异常值优先信任 vmcore（客观事实）；调用路径不符优先检查内联/尾调用优化。
+
+置信度评级：
+- 高：两轨完全吻合 + 反事实验证通过
+- 中：两轨基本吻合，但有 1 个维度依赖推断
+- 低：两轨存在矛盾且无法解释
+- 疑似硬件：两轨软件证据链均不完整 + 随机崩溃 + 无法复现
+
+#### Step 6：最终输出
+
+将 Step 3/4/5 的输出填入报告模板（`assets/vmcore-rca-template.md`），显式写清：结论、证据链、排除项、修复建议、验证建议。
+
+### A5. 硬件故障前置排查
+
+如果是未知越界地址导致的页故障，且地址不是显然的 `NULL`：
 
 1. 先提取实际故障地址和故障指令位置。
-2. 反汇编并计算“预期应访问的地址”。
-3. 对实际地址与预期地址做异或比对。
-4. 若明显符合单 bit 翻转特征，优先给出硬件故障结论，暂停软件根因追踪。
+2. 反汇编并计算”预期应访问的地址”。
+3. 使用 `scripts/vmcore/branches/check_bitflip.sh <expected> <actual>` 验证是否为单 bit 翻转。
+4. 若符合单 bit 翻转特征，优先给出硬件故障结论，暂停软件根因追踪。
 
-不要在这一关跳过硬件嫌疑，直接钻业务代码。
+硬件故障分析详见：`references/vmcore/hardware_analysis.md`
 
-### A6. 源码联动
-
-当用户提供 `src/` 内核源码时：
-
-- 源码用于验证 crash 证据，不是替代 crash 证据
-- 如果 crash 现场与源码推断冲突，以现场为准
-- 根因必须尽量落到具体文件、函数、路径分支和行号
-
-### A7. 证据链与 RCA
+### A6. 证据链与 RCA
 
 `vmcore` 复杂问题必须输出：
 
@@ -528,6 +615,14 @@ P1 必须先给规避动作，再继续 RCA。
 - `references/vmcore/source_code_structure.md`
 - `references/vmcore/struct_analysis.md`
 - `references/vmcore/troubleshooting.md`
+- `references/vmcore/hardware_analysis.md`：硬件故障分析（MCE/Bit Flip/EDAC）
+- `references/vmcore/src_analysis_patterns.md`：源码分析常见缺陷模式速查
+
+### vmcore 分支分析脚本
+
+- `scripts/vmcore/baseline_info.sh`：基线信息收集 + 22 类故障关键字匹配 + 分支推荐
+- `scripts/vmcore/branches/branch_A_null_ptr.sh` ~ `branch_V_bit_flip.sh`：22 个分支脚本
+- `scripts/vmcore/branches/check_bitflip.sh`：Bit Flip 验证工具
 
 ### 场景参考
 

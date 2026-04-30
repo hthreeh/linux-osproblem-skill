@@ -13,15 +13,17 @@
 ## 目录结构
 
 - `SKILL.md`: Skill 主说明，定义适用范围、分流逻辑和分析方法
-- `agents/manifest.yaml`: Agent 模型侧挂载配置与 Prompt (之前为 openai.yaml，现已更名为平台无关版本)
+- `agents/manifest.yaml`: Agent 模型侧挂载配置与 Prompt
 - `assets/`: 报告模板
 - `evals/`: 评测样例
 - `references/`: 按主题整理的排障参考资料
   - `common/`: 通用参考（命令、日志、性能方法论等）
   - `scenarios/`: 场景参考（网络、启动、容器、安全）
   - `oom/`: OOM 专项分析方法论
+  - `vmcore/`: vmcore 深度参考（含硬件故障分析、源码缺陷模式）
 - `scripts/`: 通用入口脚本
 - `scripts/vmcore/`: `vmcore + crash` 深度分析 + OOM 专项脚本
+- `scripts/vmcore/branches/`: 22 个崩溃类型分支分析脚本（双轨并行）
 
 ## 主要脚本
 
@@ -39,6 +41,35 @@
 - `scripts/vmcore/evidence_chain.sh`: 生成证据链（支持 `--batch` 批处理模式）
 - `scripts/vmcore/rca_wizard.sh`: 交互式 RCA 向导（支持 `--batch` 批处理模式）
 - `scripts/vmcore/analyze_struct.py`: 解析 crash 导出的结构体信息
+- `scripts/vmcore/baseline_info.sh`: 基线信息收集 + 22 类故障关键字匹配 + 分支推荐（并行收集）
+
+### vmcore 分支分析脚本（双轨并行）
+
+`scripts/vmcore/branches/` 下包含 22 个针对特定崩溃类型的分析脚本，每个脚本内置 vmcore 侧 crash 命令序列和源码侧追踪指引：
+
+- `branch_A_null_ptr.sh`: 空指针解引用（完整双轨分析）
+- `branch_B_oob.sh`: 内存越界 OOB
+- `branch_C_uaf.sh`: Use-After-Free（完整双轨分析）
+- `branch_D_stack_overflow.sh`: 内核栈溢出
+- `branch_E_mce.sh`: 硬件 MCE
+- `branch_F_memory_ue.sh`: 内存 UE
+- `branch_G_deadlock.sh`: 死锁（完整双轨分析）
+- `branch_H_soft_lockup.sh`: Soft Lockup
+- `branch_I_hard_lockup.sh`: Hard Lockup
+- `branch_J_bug_trigger.sh`: BUG() 触发
+- `branch_K_oom.sh`: OOM Killer
+- `branch_L_atomic_sleep.sh`: 原子上下文睡眠
+- `branch_M_rcu_stall.sh`: RCU Stall
+- `branch_N_fs_corruption.sh`: 文件系统崩溃
+- `branch_O_network.sh`: 网络子系统崩溃
+- `branch_P_storage_io.sh`: 存储 IO 崩溃
+- `branch_Q_kvm.sh`: KVM/vCPU 异常
+- `branch_R_acpi.sh`: ACPI 固件异常
+- `branch_S_hotplug.sh`: 热插拔/页迁移
+- `branch_T_driver.sh`: 驱动/模块异常
+- `branch_U_smep_smap.sh`: SMEP/SMAP 触发
+- `branch_V_bit_flip.sh`: 疑似 Bit Flip
+- `check_bitflip.sh`: Bit Flip 验证工具
 
 ### OOM 专项分析
 
@@ -100,7 +131,20 @@ bash scripts/vmcore/evidence_chain.sh
 bash scripts/vmcore/rca_wizard.sh
 ```
 
-### 5. OOM 专项诊断
+### 5. vmcore 分支分析（双轨并行）
+
+```bash
+# Step 1: 基线信息收集 + 分支推荐
+bash scripts/vmcore/baseline_info.sh /path/to/vmcore /path/to/vmlinux [/path/to/src]
+
+# Step 2: 按推荐执行分支脚本（以空指针为例）
+bash scripts/vmcore/branches/branch_A_null_ptr.sh /path/to/vmcore /path/to/vmlinux [/path/to/src]
+
+# Bit Flip 验证
+bash scripts/vmcore/branches/check_bitflip.sh 0xdeadbeef 0xdeadbeff
+```
+
+### 6. OOM 专项诊断
 
 ```bash
 # 系统级 OOM 信息收集
